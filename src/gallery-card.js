@@ -12,8 +12,9 @@ class GalleryCard extends LitElement {
       config: {},
       resources: { type: Array },
       currentResourceIndex: { type: Number },
-      selectedDate: {},
-      _itemsToShow: { type: Number }
+      selectedDate: { type: Object },
+      _itemsToShow: { type: Number },
+      _isDateFiltered: { type: Boolean }
     };
   }
 
@@ -22,6 +23,8 @@ class GalleryCard extends LitElement {
     this.resources = [];
     this.currentResourceIndex = 0;
     this._itemsToShow = 30; // 默认显示30个，按需加载
+    this.selectedDate = null;
+    this._isDateFiltered = false;
   }
 
   render() {
@@ -35,7 +38,12 @@ class GalleryCard extends LitElement {
       <ha-card .header=${this.config.title} class="menu-${menuAlignment}">
         <div class="card-header-actions">
           ${this.currentResourceIndex === undefined || !(this.config.enable_date_search ?? false) ?
-              html`` : html`<input type="date" class="date-picker" @change="${this._handleDateChange}" value="${this._formatDateForInput(this.selectedDate)}">` }
+              html`` : html`
+                <div class="date-filter-container">
+                  <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
+                  ${this._isDateFiltered ? html`<ha-icon-button icon="mdi:close-circle" class="btn-clear-date" @click="${this._clearDateFilter}"></ha-icon-button>` : html``}
+                </div>
+              ` }
           ${this.currentResourceIndex === undefined || !(this.config.show_reload ?? false) ?
               html`` : html`<ha-icon-button class="btn-reload" icon="mdi:refresh" @click="${() => this._loadResources(this._hass)}"></ha-icon-button>` }
         </div>
@@ -258,9 +266,11 @@ class GalleryCard extends LitElement {
 
   _videoMetadataLoaded(event) {
     const showDuration = this.config.show_duration ?? true;
+    const durationElement = event.target.closest('figure')?.querySelector(".duration");
 
-    if (!Number.isNaN(Number.parseInt(event.target.duration)) && showDuration)
-      event.target.parentNode.querySelector(".duration").innerHTML = "[" + this._getFormattedVideoDuration(event.target.duration) + "]";
+    if (!Number.isNaN(Number.parseInt(event.target.duration)) && showDuration && durationElement) {
+      durationElement.innerHTML = "[" + this._getFormattedVideoDuration(event.target.duration) + "]";
+    }
 
     if (this.config.video_muted)
       event.target.muted = "muted";
@@ -375,6 +385,13 @@ class GalleryCard extends LitElement {
 
   _handleDateChange(event) {
     this.selectedDate = event.target.valueAsDate;
+    this._isDateFiltered = this.selectedDate !== null;
+    this._loadResources(this._hass);
+  }
+
+  _clearDateFilter() {
+    this.selectedDate = null;
+    this._isDateFiltered = false;
     this._loadResources(this._hass);
   }
 
@@ -383,9 +400,9 @@ class GalleryCard extends LitElement {
 
     this.currentResourceIndex = undefined;
     this.resources = [];
-    if(this.selectedDate === undefined)
-        this.selectedDate = new Date();
-
+    
+    const filterForDate = (this.config.enable_date_search ?? false) && this._isDateFiltered;
+    
     const maximumFilesPerEntity = this.config.maximum_files_per_entity ?? true;
     const maximumFiles = maximumFilesPerEntity ? this.config.maximum_files : undefined;
     const maximumFilesTotal = maximumFilesPerEntity ? undefined: this.config.maximum_files;
@@ -396,7 +413,6 @@ class GalleryCard extends LitElement {
     const parsedDateSort = this.config.parsed_date_sort ?? false;
     const reverseSort = this.config.reverse_sort ?? true;
     const randomSort = this.config.random_sort ?? false;
-    const filterForDate = this.config.enable_date_search ?? false;
 
     for (const entity of this.config.entities) {
       let entityId;
@@ -714,6 +730,7 @@ class GalleryCard extends LitElement {
   }
 
   _createFileResource(fileRawUrl, fileNameFormat, fileNameDateBegins, captionFormat) {
+    if (!fileRawUrl) return undefined;
     let resource;
 
     const fileUrl = fileRawUrl.split("?")[0];
@@ -768,11 +785,12 @@ class GalleryCard extends LitElement {
   }
 
   _formatDateForInput(date) {
-      const yyyy = date.getFullYear();
-      const mm = String(date.getMonth() + 1).padStart(2, '0');
-      const dd = String(date.getDate()).padStart(2, '0');
+    if (!date) date = new Date();
+    const yyyy = date.getFullYear();
+    const mm = String(date.getMonth() + 1).padStart(2, '0');
+    const dd = String(date.getDate()).padStart(2, '0');
 
-      return `${yyyy}-${mm}-${dd}`;
+    return `${yyyy}-${mm}-${dd}`;
   }
 
 
@@ -797,20 +815,32 @@ class GalleryCard extends LitElement {
       }
       .card-header-actions {
         display: flex;
-        justify-content: space-between;
+        justify-content: flex-end;
         align-items: center;
         padding: 8px 16px;
+        gap: 8px;
       }
-      .btn-reload {
-        color: var(--gallery-card-primary-color);
+      .date-filter-container {
+        display: flex;
+        align-items: center;
+        background: var(--secondary-background-color, #f5f5f5);
+        border-radius: 20px;
+        padding: 2px 4px 2px 12px;
+        border: 1px solid var(--divider-color, #e0e0e0);
+      }
+      .btn-clear-date {
+        --mdc-icon-button-size: 32px;
+        --mdc-icon-size: 18px;
+        color: var(--error-color, #db4437);
       }
       .date-picker {
-        border: 1px solid var(--divider-color, #e0e0e0);
-        border-radius: 4px;
-        padding: 4px 8px;
-        background: var(--gallery-card-bg-color);
+        border: none;
+        background: transparent;
         color: var(--gallery-card-text-color);
         font-family: inherit;
+        outline: none;
+        font-size: 0.9em;
+        cursor: pointer;
       }
       .resource-viewer {
         position: relative;
