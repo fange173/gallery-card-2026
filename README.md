@@ -1,6 +1,6 @@
-# Gallery Card
+# Gallery Card 2026
 
-Custom card for Home Assistant's UI LoveLace which will display images and videos in the style of a gallery.  Also supports displaying camera images.
+Modern Gallery Card for Home Assistant's UI LoveLace. Displays images and videos in a beautiful gallery style with performance optimizations.
 
 This was developed for use alongside the [component for Kuna cameras](https://github.com/marthoc/kuna) but should work with any images/videos, in theory.
 

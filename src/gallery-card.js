@@ -3,17 +3,25 @@ import dayjs from "dayjs";
 import customParseFormat from "dayjs/plugin/customParseFormat";
 import relativeTime from "dayjs/plugin/relativeTime";
 
-const GalleryCardVersion = "1.0.0";
+const GalleryCardVersion = "2026.0.1";
 
 class GalleryCard extends LitElement {
   static get properties() {
     return {
       _hass: {},
       config: {},
-      resources: {},
-      currentResourceIndex: {},
-      selectedDate: {}
+      resources: { type: Array },
+      currentResourceIndex: { type: Number },
+      selectedDate: {},
+      _itemsToShow: { type: Number }
     };
+  }
+
+  constructor() {
+    super();
+    this.resources = [];
+    this.currentResourceIndex = 0;
+    this._itemsToShow = 30; // 默认显示30个，按需加载
   }
 
   render() {
@@ -25,10 +33,12 @@ class GalleryCard extends LitElement {
           return html`<hui-warning>${error}</hui-warning>`;
          })}
       <ha-card .header=${this.config.title} class="menu-${menuAlignment}">
-        ${this.currentResourceIndex === undefined || !(this.config.enable_date_search ?? false) ?
-            html`` : html`<input type="date" class="date-picker" @change="${this._handleDateChange}" value="${this._formatDateForInput(this.selectedDate)}">` }
-        ${this.currentResourceIndex === undefined || !(this.config.show_reload ?? false) ?
-            html`` : html`<ha-progress-button class="btn-reload" @click="${() => this._loadResources(this._hass)}">Reload</ha-progress-button>` }
+        <div class="card-header-actions">
+          ${this.currentResourceIndex === undefined || !(this.config.enable_date_search ?? false) ?
+              html`` : html`<input type="date" class="date-picker" @change="${this._handleDateChange}" value="${this._formatDateForInput(this.selectedDate)}">` }
+          ${this.currentResourceIndex === undefined || !(this.config.show_reload ?? false) ?
+              html`` : html`<ha-icon-button class="btn-reload" icon="mdi:refresh" @click="${() => this._loadResources(this._hass)}"></ha-icon-button>` }
+        </div>
         <div class="resource-viewer" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
           <figure style="margin:5px;">
             ${
@@ -45,17 +55,22 @@ class GalleryCard extends LitElement {
                 html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay} src="${this._currentResource().url}#t=0.1" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}" 
                             @ended="${() => this._videoHasEnded()}" preload="metadata"></video>`
               }
-            <figcaption>${this._currentResource().caption} 
-              ${this._isImageExtension(this._currentResource().extension) ?
-                  html`` : html`<span class="duration"></span> ` }                  
-              ${this.config.show_zoom ? html`<a href= "${this._currentResource().url}" target="_blank">Zoom</a>` : html`` }                  
+            <figcaption>
+              <div class="caption-text">${this._currentResource().caption}</div>
+              <div class="caption-details">
+                ${this._isImageExtension(this._currentResource().extension) ?
+                    html`` : html`<span class="duration"></span> ` }                  
+                ${this.config.show_zoom ? html`<a class="zoom-link" href= "${this._currentResource().url}" target="_blank">Zoom</a>` : html`` }                  
+              </div>
             </figcaption>
           </figure>  
-          <button class="btn btn-left" @click="${() => this._selectResource(this.currentResourceIndex-1)}">&lt;</button> 
-          <button class="btn btn-right" @click="${() => this._selectResource(this.currentResourceIndex+1)}">&gt;</button> 
+          <div class="viewer-nav">
+            <ha-icon-button class="nav-btn nav-left" icon="mdi:chevron-left" @click="${() => this._selectResource(this.currentResourceIndex-1)}"></ha-icon-button> 
+            <ha-icon-button class="nav-btn nav-right" icon="mdi:chevron-right" @click="${() => this._selectResource(this.currentResourceIndex+1)}"></ha-icon-button> 
+          </div>
         </div>
         <div class="resource-menu">
-          ${this.resources.map((resource, index) => {
+          ${this.resources.slice(0, this._itemsToShow).map((resource, index) => {
                 return html`
                   <figure style="margin:5px;" id="resource${index}" data-imageIndex="${index}" @click="${() => this._selectResource(index)}" class="${(index === this.currentResourceIndex) ? 'selected' : ''}">
                   ${
@@ -77,6 +92,10 @@ class GalleryCard extends LitElement {
                   </figure>
                 `;
             })}
+          ${this._itemsToShow < this.resources.length ? 
+            html`<div class="load-more" @click="${this._loadMore}">加载更多... (${this.resources.length - this._itemsToShow} 剩余)</div>` : 
+            html``
+          }
         </div>
         <div id="imageModal" class="modal" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
           <img class="modal-content" id="popupImage">
@@ -186,6 +205,10 @@ class GalleryCard extends LitElement {
     }
   }
 
+  _loadMore() {
+    this._itemsToShow += 30;
+  }
+
   _selectResource(index, fromSlideshow) {
     this.autoPlayVideo = true;
 
@@ -195,6 +218,11 @@ class GalleryCard extends LitElement {
       nextResourceIndex = this.resources.length - 1;
     else if (index >= this.resources.length)
       nextResourceIndex = 0;
+
+    // 如果选中的索引超出了当前显示范围，自动加载更多
+    if (nextResourceIndex >= this._itemsToShow) {
+      this._itemsToShow = nextResourceIndex + 10;
+    }
 
     this.currentResourceIndex = nextResourceIndex;
     this._loadImageForPopup();
@@ -750,239 +778,240 @@ class GalleryCard extends LitElement {
 
   static get styles() {
     return css`
+      :host {
+        --gallery-card-primary-color: var(--primary-color, #03a9f4);
+        --gallery-card-text-color: var(--primary-text-color, #212121);
+        --gallery-card-bg-color: var(--card-background-color, #fff);
+      }
       .content {
         overflow: hidden;
-      }
-      .content hui-card-preview {
-        max-width: 100%;
       }
       ha-card {
         height: 100%;
         overflow: hidden;
-      }
-      .btn-reload {
-        float: right;
-        margin-right: 25px;
-        text-align: right;
-      }
-      .date-picker {
-        padding-left: 5px;
-        margin-left: 5px;
-        margin-top: 8px;
-      }
-      figcaption {
-        text-align:center;
-        white-space: nowrap;
-      }
-      img, video {
-        width: 100%;
-        object-fit: contain;
-      }
-      .resource-viewer .btn {
-        position: absolute;
-        transform: translate(-50%, -50%);
-        -ms-transform: translate(-50%, -50%);
-        background-color: #555;
-        color: white;
-        font-size: 16px;
-        padding: 12px 12px;
-        border: none;
-        cursor: pointer;
-        border-radius: 5px;
-        opacity: 0;
-        transition: opacity .35s ease;
-      }
-      .resource-viewer:hover .btn {
-        opacity: 1;
-      }
-      .resource-viewer .btn-left {
-        left: 0%;
-        margin-left: 25px;
-      }
-      .resource-viewer .btn-right {
-        right: 0%;
-        margin-right: -10px
-      }
-      figure.selected {
-        opacity: 0.5;
-      }
-      .duration {
-        font-style:italic;
-      }
-      @media all and (max-width: 599px) {
-        .menu-responsive .resource-viewer {
-          width: 100%;
-        }
-        .menu-responsive .resource-viewer .btn {
-          top: 33%;
-        }
-        .menu-responsive .resource-menu {
-          width:100%; 
-          overflow-y: hidden;
-          overflow-x: scroll;
-          display: flex;
-        }
-        .menu-responsive .resource-menu figure {
-          margin: 0px;
-          padding: 12px;
-        }
-      }
-      @media all and (min-width: 600px) {
-        .menu-responsive .resource-viewer {
-          float: left;
-          width: 75%;
-          position: relative;
-        }
-        .menu-responsive .resource-viewer .btn {
-          top: 40%;
-        }
-                
-        .menu-responsive .resource-menu {
-          width:25%; 
-          height: calc(100vh - 120px);
-          overflow-y: scroll; 
-          float: right;
-        }
-      }
-      .menu-bottom .resource-viewer {
-        width: 100%;
-      }
-      .menu-bottom .resource-viewer .btn {
-        top: 33%;
-      }
-      .menu-bottom .resource-menu {
-        width:100%; 
-        overflow-y: hidden;
-        overflow-x: scroll;
-        display: flex;
-      }
-      .menu-bottom .resource-menu figure {
-        margin: 0px;
-        padding: 12px;
-        width: 25%;
-      }
-      .menu-bottom .resource-viewer figure img,
-      .menu-bottom .resource-viewer figure video {
-        max-height: 70vh;
-      }
-      .menu-right .resource-viewer {
-        float: left;
-        width: 75%;
-        position: relative;
-      }
-      .menu-right .resource-viewer .btn {
-        top: 40%;
-      }
-              
-      .menu-right .resource-menu {
-        width:25%; 
-        height: calc(100vh - 120px);
-        overflow-y: scroll; 
-        float: right;
-      }
-      .menu-left .resource-viewer {
-        float: right;
-        width: 75%;
-        position: relative;
-      }
-      .menu-left .resource-viewer .btn {
-        top: 40%;
-      }
-              
-      .menu-left .resource-menu {
-        width:25%; 
-        height: calc(100vh - 120px);
-        overflow-y: scroll; 
-        float: left;
-      }
-      .menu-left .btn-reload {
-        float: left;
-        margin-left: 25px;
-      }
-      .menu-top {
         display: flex;
         flex-direction: column;
+        background: var(--gallery-card-bg-color);
+        border-radius: var(--ha-card-border-radius, 12px);
+        box-shadow: var(--ha-card-box-shadow, 0 2px 2px 0 rgba(0,0,0,0.14), 0 1px 5px 0 rgba(0,0,0,0.12), 0 3px 1px -2px rgba(0,0,0,0.2));
       }
-      .menu-top .resource-viewer {
-        width: 100%;
-        order: 2
-      }
-      .menu-top .resource-viewer .btn {
-        top: 45%;
-      }
-      .menu-top .resource-menu {
-        width:100%; 
-        overflow-y: hidden;
-        overflow-x: scroll;
+      .card-header-actions {
         display: flex;
-        order: 1
+        justify-content: space-between;
+        align-items: center;
+        padding: 8px 16px;
       }
-      .menu-top .resource-menu figure {
-        margin: 0px;
-        padding: 12px;
-        width: 25%;
+      .btn-reload {
+        color: var(--gallery-card-primary-color);
       }
-      .menu-top .resource-viewer figure img,
-      .menu-top .resource-viewer figure video {
-        max-height: 70vh;
+      .date-picker {
+        border: 1px solid var(--divider-color, #e0e0e0);
+        border-radius: 4px;
+        padding: 4px 8px;
+        background: var(--gallery-card-bg-color);
+        color: var(--gallery-card-text-color);
+        font-family: inherit;
       }
-      .menu-hidden .resource-viewer {
+      .resource-viewer {
+        position: relative;
         width: 100%;
+        background: #000;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 200px;
+        overflow: hidden;
       }
-      .menu-hidden .resource-viewer .btn {
-        top: 33%;
+      .resource-viewer figure {
+        width: 100%;
+        margin: 0 !important;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
       }
-      .menu-hidden .resource-menu {
-        width:100%; 
+      img, video {
+        max-width: 100%;
+        max-height: 80vh;
+        object-fit: contain;
+        transition: opacity 0.3s ease;
+      }
+      figcaption {
+        width: 100%;
+        padding: 12px;
+        background: rgba(0, 0, 0, 0.7);
+        color: #fff;
+        text-align: center;
+        box-sizing: border-box;
+      }
+      .caption-text {
+        font-weight: 500;
+        font-size: 1.1em;
+        margin-bottom: 4px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .caption-details {
+        font-size: 0.9em;
+        opacity: 0.8;
+      }
+      .zoom-link {
+        color: var(--gallery-card-primary-color);
+        text-decoration: none;
+        margin-left: 8px;
+      }
+      .viewer-nav {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0 10px;
+        pointer-events: none;
+      }
+      .nav-btn {
+        pointer-events: auto;
+        background: rgba(255, 255, 255, 0.2);
+        color: #fff;
+        border-radius: 50%;
+        opacity: 0;
+        transition: all 0.3s ease;
+      }
+      .resource-viewer:hover .nav-btn {
+        opacity: 1;
+        background: rgba(255, 255, 255, 0.4);
+      }
+      .resource-menu {
+        padding: 8px;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+        gap: 8px;
+        overflow-y: auto;
+        max-height: 400px;
+        background: var(--secondary-background-color, #f5f5f5);
+      }
+      .resource-menu figure {
+        margin: 0 !important;
+        cursor: pointer;
+        border-radius: 8px;
+        overflow: hidden;
+        background: #000;
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        position: relative;
+        aspect-ratio: 16/9;
+      }
+      .resource-menu figure:hover {
+        transform: scale(1.03);
+        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+      }
+      .resource-menu figure.selected {
+        outline: 3px solid var(--gallery-card-primary-color);
+        outline-offset: -3px;
+      }
+      .resource-menu img, .resource-menu video {
+        width: 100%;
+        height: 100%;
+        object-fit: cover;
+      }
+      .resource-menu figcaption {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        padding: 4px;
+        font-size: 0.7em;
+        background: rgba(0,0,0,0.6);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .load-more {
+        grid-column: 1 / -1;
+        text-align: center;
+        padding: 12px;
+        cursor: pointer;
+        color: var(--gallery-card-primary-color);
+        font-weight: 500;
+        transition: background 0.2s;
+        border-radius: 8px;
+      }
+      .load-more:hover {
+        background: rgba(var(--rgb-primary-color), 0.1);
+      }
+
+      /* Layout modes */
+      .menu-responsive {
+        flex-direction: column;
+      }
+      @media all and (min-width: 600px) {
+        .menu-responsive {
+          flex-direction: row;
+        }
+        .menu-responsive .resource-viewer {
+          flex: 3;
+        }
+        .menu-responsive .resource-menu {
+          flex: 1;
+          max-height: none;
+          grid-template-columns: 1fr;
+        }
+      }
+      .menu-bottom .resource-menu {
+        order: 2;
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        display: flex;
+        overflow-x: auto;
         overflow-y: hidden;
-        overflow-x: scroll;
-        display: none;
       }
-      /* The Modal (background) */
+      .menu-bottom .resource-menu figure {
+        min-width: 120px;
+      }
+      .menu-right { flex-direction: row; }
+      .menu-right .resource-menu { width: 25%; max-height: none; grid-template-columns: 1fr; }
+      .menu-left { flex-direction: row-reverse; }
+      .menu-left .resource-menu { width: 25%; max-height: none; grid-template-columns: 1fr; }
+      .menu-top { flex-direction: column-reverse; }
+      .menu-top .resource-menu { display: flex; overflow-x: auto; overflow-y: hidden; }
+      .menu-top .resource-menu figure { min-width: 120px; }
+      .menu-hidden .resource-menu { display: none; }
+
+      /* Modal */
       .modal {
-        display: none; /* Hidden by default */
-        position: fixed; /* Stay in place */
-        z-index: 1; /* Sit on top */
-        padding-top: 100px; /* Location of the box */
+        display: none;
+        position: fixed;
+        z-index: 1000;
         left: 0;
         top: 0;
-        width: 100%; /* Full width */
-        height: 100%; /* Full height */
-        overflow: auto; /* Enable scroll if needed */
-        background-color: rgb(0,0,0); /* Fallback color */
-        background-color: rgba(0,0,0,0.9); /* Black w/ opacity */
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0,0,0,0.95);
+        backdrop-filter: blur(5px);
       }
-      /* Modal Content (Image) */
       .modal-content {
         margin: auto;
         display: block;
-        width: 95%;
+        max-width: 90%;
+        max-height: 85%;
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        animation: zoom 0.3s;
       }
-      /* Caption of Modal Image (Image Text) - Same Width as the Image */
       #popupCaption {
-        margin: auto;
-        display: block;
-        width: 80%;
-        max-width: 700px;
+        position: absolute;
+        bottom: 20px;
+        width: 100%;
         text-align: center;
-        color: #ccc;
-        padding: 10px 0;
-        height: 150px;
-      }
-      /* Add Animation - Zoom in the Modal */
-      .modal-content, #popupCaption {
-        animation-name: zoom;
-        animation-duration: 0.6s;
+        color: #fff;
+        font-size: 1.2em;
       }
       @keyframes zoom {
-        from {transform:scale(0)}
-        to {transform:scale(1)}
-      }
-      /* 100% Image Width on Smaller Screens */
-      @media only screen and (max-width: 700px){
-        .modal-content {
-          width: 100%;
-        }
+        from {transform: translate(-50%, -50%) scale(0.8); opacity: 0;}
+        to {transform: translate(-50%, -50%) scale(1); opacity: 1;}
       }
     `;
   }

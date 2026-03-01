@@ -1,6 +1,6 @@
 {
-  "name": "Gallery Card 2024",
-  "content_in_root": false,
+  "name": "Gallery Card 2026",
+  "content_in_root": true,
   "filename": "gallery-card.js",
   "render_readme": true,
   "homeassistant": "2024.4.2"
