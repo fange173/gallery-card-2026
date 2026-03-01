@@ -865,9 +865,24 @@ class GalleryCard extends LitElement {
         display: flex;
         justify-content: center;
         align-items: center;
-        height: calc(100vh - 56px);
         overflow: hidden;
         align-self: flex-start;
+      }
+      .resource-viewer figure {
+        width: 100%;
+        margin: 0 !important;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+      }
+      img, video {
+        max-width: 100%;
+        width: auto;
+        height: auto;
+        object-fit: contain;
+        display: block;
+        transition: opacity 0.3s ease;
       }
       .resource-menu-container {
         display: flex;
@@ -923,21 +938,6 @@ class GalleryCard extends LitElement {
         font-size: 0.95em;
         cursor: pointer;
         text-align: center;
-      }
-      .resource-viewer figure {
-        width: 100%;
-        margin: 0 !important;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-      }
-      img, video {
-        max-width: 100%;
-        width: auto;
-        height: auto;
-        object-fit: contain;
-        transition: opacity 0.3s ease;
       }
       figcaption {
         width: 100%;
