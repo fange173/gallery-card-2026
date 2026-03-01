@@ -23,8 +23,10 @@ class GalleryCard extends LitElement {
     this.resources = [];
     this.currentResourceIndex = 0;
     this._itemsToShow = 30; // 默认显示30个，按需加载
-    this.selectedDate = null;
-    this._isDateFiltered = false;
+    this.selectedDate = new Date();
+    this._isDateFiltered = true;
+    this._isInitialLoad = true;
+    this._isLoading = false;
   }
 
   render() {
@@ -35,18 +37,7 @@ class GalleryCard extends LitElement {
          this.errors.map((error) => {
           return html`<hui-warning>${error}</hui-warning>`;
          })}
-      <ha-card .header=${this.config.title} class="menu-${menuAlignment}">
-        <div class="card-header-actions">
-          ${this.currentResourceIndex === undefined || !(this.config.enable_date_search ?? false) ?
-              html`` : html`
-                <div class="date-filter-container">
-                  <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
-                  ${this._isDateFiltered ? html`<ha-icon-button icon="mdi:close-circle" class="btn-clear-date" @click="${this._clearDateFilter}"></ha-icon-button>` : html``}
-                </div>
-              ` }
-          ${this.currentResourceIndex === undefined || !(this.config.show_reload ?? false) ?
-              html`` : html`<ha-icon-button class="btn-reload" icon="mdi:refresh" @click="${() => this._loadResources(this._hass)}"></ha-icon-button>` }
-        </div>
+      <ha-card class="menu-${menuAlignment}">
         <div class="resource-viewer" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
           <figure style="margin:5px;">
             ${
@@ -77,33 +68,46 @@ class GalleryCard extends LitElement {
             <ha-icon-button class="nav-btn nav-right" icon="mdi:chevron-right" @click="${() => this._selectResource(this.currentResourceIndex+1)}"></ha-icon-button> 
           </div>
         </div>
-        <div class="resource-menu">
-          ${this.resources.slice(0, this._itemsToShow).map((resource, index) => {
-                return html`
-                  <figure style="margin:5px;" id="resource${index}" data-imageIndex="${index}" @click="${() => this._selectResource(index)}" class="${(index === this.currentResourceIndex) ? 'selected' : ''}">
-                  ${
-                      resource.isHass ?
-                      html`
-                        <hui-image
-                          .hass=${this._hass}
-                          .cameraImage=${resource.name}
-                          .cameraView=${"live"}
-                        ></hui-image>
-                      ` :
-                      this._isImageExtension(resource.extension) ?
-                      html`<img class="lzy_img" src="/local/community/gallery-card/placeholder.jpg" data-src="${resource.url}"/>` :
-                        (this.config.video_preload ?? true) ?
-                        html`<video preload="none" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at }" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${() => this._downloadNextMenuVideo()}" preload="metadata"></video>` :
-                          html`<div style="text-align: center"><div class="lzy_img"><ha-icon id="play" icon="mdi:movie-play-outline"></ha-icon></div></div>`
-                    }
-                  <figcaption>${resource.caption} <span class="duration"></span></figcaption>
-                  </figure>
-                `;
-            })}
-          ${this._itemsToShow < this.resources.length ? 
-            html`<div class="load-more" @click="${this._loadMore}">加载更多... (${this.resources.length - this._itemsToShow} 剩余)</div>` : 
-            html``
-          }
+        <div class="resource-menu-container">
+          <div class="card-header-actions">
+            ${!(this.config.enable_date_search ?? false) ?
+                html`` : html`
+                  <div class="date-filter-container">
+                    <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
+                    ${this._isDateFiltered ? html`<ha-icon-button icon="mdi:close-circle" class="btn-clear-date" @click="${this._clearDateFilter}"></ha-icon-button>` : html``}
+                  </div>
+                ` }
+            ${!(this.config.show_reload ?? false) ?
+                html`` : html`<ha-icon-button class="btn-reload" icon="mdi:refresh" @click="${() => this._loadResources(this._hass)}"></ha-icon-button>` }
+          </div>
+          <div class="resource-menu">
+            ${this.resources.slice(0, this._itemsToShow).map((resource, index) => {
+                  return html`
+                    <figure style="margin:5px;" id="resource${index}" data-imageIndex="${index}" @click="${() => this._selectResource(index)}" class="${(index === this.currentResourceIndex) ? 'selected' : ''}">
+                    ${
+                        resource.isHass ?
+                        html`
+                          <hui-image
+                            .hass=${this._hass}
+                            .cameraImage=${resource.name}
+                            .cameraView=${"live"}
+                          ></hui-image>
+                        ` :
+                        this._isImageExtension(resource.extension) ?
+                        html`<img class="lzy_img" src="/local/community/gallery-card/placeholder.jpg" data-src="${resource.url}"/>` :
+                          (this.config.video_preload ?? true) ?
+                          html`<video preload="none" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at }" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${() => this._downloadNextMenuVideo()}" preload="metadata"></video>` :
+                            html`<div style="text-align: center"><div class="lzy_img"><ha-icon id="play" icon="mdi:movie-play-outline"></ha-icon></div></div>`
+                      }
+                    <figcaption>${resource.caption} <span class="duration"></span></figcaption>
+                    </figure>
+                  `;
+              })}
+            ${this._itemsToShow < this.resources.length ? 
+              html`<div class="load-more" @click="${this._loadMore}">加载更多... (${this.resources.length - this._itemsToShow} 剩余)</div>` : 
+              html``
+            }
+          </div>
         </div>
         <div id="imageModal" class="modal" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
           <img class="modal-content" id="popupImage">
@@ -395,88 +399,122 @@ class GalleryCard extends LitElement {
     this._loadResources(this._hass);
   }
 
-  _loadResources(hass) {
-    const commands = [];
+  _convertOldFormat(format) {
+    if (!format || typeof format !== "string") return format;
+    return format
+      .replace(/%YYY/g, "YYYY")
+      .replace(/%Y/g, "YYYY")
+      .replace(/%m/g, "MM")
+      .replace(/%d/g, "DD")
+      .replace(/%H/g, "HH")
+      .replace(/%M/g, "mm")
+      .replace(/%S/g, "ss");
+  }
+
+  async _loadResources(hass) {
+    if (this._isLoading) return;
+    this._isLoading = true;
 
     this.currentResourceIndex = undefined;
     this.resources = [];
     
-    const filterForDate = (this.config.enable_date_search ?? false) && this._isDateFiltered;
+    let filterForDate = (this.config.enable_date_search ?? false) && this._isDateFiltered;
     
+    let maximumFilesRaw = this.config.maximum_files;
+    if (maximumFilesRaw === 0) maximumFilesRaw = undefined;
+
     const maximumFilesPerEntity = this.config.maximum_files_per_entity ?? true;
-    const maximumFiles = maximumFilesPerEntity ? this.config.maximum_files : undefined;
-    const maximumFilesTotal = maximumFilesPerEntity ? undefined: this.config.maximum_files;
-    let folderFormat = this.config.folder_format;
-    let fileNameFormat = this.config.file_name_format;
+    const maximumFiles = maximumFilesPerEntity ? maximumFilesRaw : undefined;
+    const maximumFilesTotal = maximumFilesPerEntity ? undefined : maximumFilesRaw;
+    
+    let folderFormat = this._convertOldFormat(this.config.folder_format);
+    let fileNameFormat = this._convertOldFormat(this.config.file_name_format);
     let fileNameDateBegins = this.config.file_name_date_begins;
-    let captionFormat = this.config.caption_format;
+    let captionFormat = this._convertOldFormat(this.config.caption_format);
     const parsedDateSort = this.config.parsed_date_sort ?? false;
     const reverseSort = this.config.reverse_sort ?? true;
     const randomSort = this.config.random_sort ?? false;
 
-    for (const entity of this.config.entities) {
-      let entityId;
-      let recursive = false;
-      let includeVideo = true;
-      let includeImages = true;
+    const fetchAll = () => {
+      const entityCommands = [];
 
-      if (typeof entity === 'object') {
-        entityId = entity.path;
-        if (entity.recursive)
-          recursive = entity.recursive;
-        if (entity.include_video !== undefined)
-          includeVideo = entity.include_video;
-        if (entity.include_images !== undefined)
-          includeImages = entity.include_images;
-        if (entity.folder_format)
-          folderFormat = entity.folder_format;
-        if (entity.file_name_format)
-          fileNameFormat = entity.file_name_format;
-        if (entity.file_name_date_begins)
-          fileNameDateBegins = entity.file_name_date_begins;
-        if (entity.caption_format)
-          captionFormat = entity.caption_format;
-      }
-      else {
-        entityId = entity;
-      }
+      for (const entity of this.config.entities) {
+        let entityId;
+        let recursive = false;
+        let includeVideo = true;
+        let includeImages = true;
 
-      if (entityId.substring(0, 15).toLowerCase() === "media-source://") {
-        commands.push(this._loadMediaResource(hass, entityId, maximumFiles, folderFormat, fileNameFormat, fileNameDateBegins, captionFormat, recursive, reverseSort, includeVideo, includeImages, filterForDate));
-      }
-      else {
-        const entityState = hass.states[entityId];
-
-        if (entityState === undefined) {
-          commands.push(Promise.resolve({
-            error: true,
-            entity: entityId,
-            message: "Invalid Entity ID"
-          }));
+        if (typeof entity === "object") {
+          entityId = entity.path;
+          if (entity.recursive) recursive = entity.recursive;
+          if (entity.include_video !== undefined) includeVideo = entity.include_video;
+          if (entity.include_images !== undefined) includeImages = entity.include_images;
+          if (entity.folder_format) folderFormat = this._convertOldFormat(entity.folder_format);
+          if (entity.file_name_format) fileNameFormat = this._convertOldFormat(entity.file_name_format);
+          if (entity.file_name_date_begins) fileNameDateBegins = entity.file_name_date_begins;
+          if (entity.caption_format) captionFormat = this._convertOldFormat(entity.caption_format);
+        } else {
+          entityId = entity;
         }
-        else {
-          if (entityState.attributes.entity_picture !== undefined)
-            commands.push(this._loadCameraResource(entityId, entityState));
 
-          // Custom Files component
-          if (entityState.attributes.fileList !== undefined)
-            commands.push(this._loadFilesResources(entityState.attributes.fileList, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort));
+        if (entityId.substring(0, 15).toLowerCase() === "media-source://") {
+          entityCommands.push(this._loadMediaResource(hass, entityId, maximumFiles, folderFormat, fileNameFormat, fileNameDateBegins, captionFormat, recursive, reverseSort, includeVideo, includeImages, filterForDate));
+        } else {
+          const entityState = hass.states[entityId];
 
-          // HA Folder component
-          if (entityState.attributes.file_list !== undefined)
-            commands.push(this._loadFilesResources(entityState.attributes.file_list, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort));
+          if (entityState === undefined) {
+            entityCommands.push(Promise.resolve({
+              error: true,
+              entity: entityId,
+              message: "Invalid Entity ID"
+            }));
+          } else {
+            if (entityState.attributes.entity_picture !== undefined)
+              entityCommands.push(this._loadCameraResource(entityId, entityState));
+
+            if (entityState.attributes.fileList !== undefined)
+              entityCommands.push(this._loadFilesResources(entityState.attributes.fileList, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort));
+
+            if (entityState.attributes.file_list !== undefined)
+              entityCommands.push(this._loadFilesResources(entityState.attributes.file_list, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort));
+          }
         }
       }
-    }
+      return entityCommands;
+    };
 
-    Promise.all(commands).then(resources => {
-      this.resources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
+    try {
+      let resources = await Promise.all(fetchAll());
+      let flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
 
+      // 自动回溯逻辑
+      if (this._isInitialLoad && filterForDate && flatResources.length === 0) {
+        let daysBack = 0;
+        let tempDate = dayjs(this.selectedDate);
+
+        while (flatResources.length === 0 && daysBack < 30) {
+          daysBack++;
+          tempDate = tempDate.subtract(1, "day");
+          this.selectedDate = tempDate.toDate();
+          resources = await Promise.all(fetchAll());
+          flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
+        }
+        
+        // 如果回溯了30天还没找到，则显示全部
+        if (flatResources.length === 0) {
+          this._isDateFiltered = false;
+          filterForDate = false;
+          resources = await Promise.all(fetchAll());
+          flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
+        }
+      }
+      this._isInitialLoad = false;
+
+      this.resources = flatResources;
       if (parsedDateSort) {
         if (reverseSort) {
           this.resources.sort(function (x, y) { return y.date - x.date; });
-        }
-        else {
+        } else {
           this.resources.sort(function (x, y) { return x.date - y.date; });
         }
       }
@@ -492,7 +530,6 @@ class GalleryCard extends LitElement {
       }
 
       if (maximumFilesTotal !== undefined && !Number.isNaN(maximumFilesTotal) && maximumFilesTotal < this.resources.length) {
-        // Keep only N total, but make sure camera resources remain
         this.resources = this.resources.filter(function(resource) {
           if (resource.isHass)
             return true;
@@ -501,22 +538,24 @@ class GalleryCard extends LitElement {
             return true;
           }
           return false;
-        }, {count: resources.filter(resource => resource.isHass).length});
+        }, {count: this.resources.filter(resource => resource.isHass).length});
       }
 
       this.currentResourceIndex = 0;
       if (!(this.parentNode && this.parentNode.tagName && this.parentNode.tagName.toLowerCase() === "hui-card-preview")) {
-        document.addEventListener('keydown',event=>this._keyNavigation(event));
+        document.addEventListener("keydown", event => this._keyNavigation(event));
       }
 
       this.errors = [];
       for (const error of resources.filter(result => result.error).flat(Number.POSITIVE_INFINITY)) {
-        this.errors.push(error.message + ' ' + error.entity);
-        this._hass.callService('system_log', 'write', {
-          message: 'Gallery Card Error:  ' + error.message + '   ' + error.entity
+        this.errors.push(error.message + " " + error.entity);
+        this._hass.callService("system_log", "write", {
+          message: "Gallery Card Error:  " + error.message + "   " + error.entity
         });
       }
-    });
+    } finally {
+      this._isLoading = false;
+    }
   }
 
   _loadMediaResource(hass, contentId, maximumFiles, folderFormat, fileNameFormat, fileNameDateBegins, captionFormat, recursive, reverseSort, includeVideo, includeImages, filterForDate) {
@@ -806,6 +845,7 @@ class GalleryCard extends LitElement {
       }
       ha-card {
         height: 100%;
+        max-height: 100%;
         overflow: hidden;
         display: flex;
         flex-direction: column;
@@ -813,12 +853,19 @@ class GalleryCard extends LitElement {
         border-radius: var(--ha-card-border-radius, 12px);
         box-shadow: var(--ha-card-box-shadow, 0 2px 2px 0 rgba(0,0,0,0.14), 0 1px 5px 0 rgba(0,0,0,0.12), 0 3px 1px -2px rgba(0,0,0,0.2));
       }
+      .resource-menu-container {
+        display: flex;
+        flex-direction: column;
+        background: var(--secondary-background-color, #f5f5f5);
+        max-height: 400px;
+      }
       .card-header-actions {
         display: flex;
         justify-content: flex-end;
         align-items: center;
-        padding: 8px 16px;
+        padding: 4px 12px;
         gap: 8px;
+        border-bottom: 1px solid var(--divider-color, #e0e0e0);
       }
       .date-filter-container {
         display: flex;
@@ -850,7 +897,9 @@ class GalleryCard extends LitElement {
         justify-content: center;
         align-items: center;
         min-height: 200px;
+        max-height: 70vh;
         overflow: hidden;
+        flex: 1;
       }
       .resource-viewer figure {
         width: 100%;
@@ -861,7 +910,7 @@ class GalleryCard extends LitElement {
       }
       img, video {
         max-width: 100%;
-        max-height: 80vh;
+        max-height: 100%;
         object-fit: contain;
         transition: opacity 0.3s ease;
       }
@@ -914,14 +963,16 @@ class GalleryCard extends LitElement {
         opacity: 1;
         background: rgba(255, 255, 255, 0.4);
       }
+      .btn-reload {
+        color: var(--gallery-card-primary-color);
+      }
       .resource-menu {
         padding: 8px;
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
         gap: 8px;
         overflow-y: auto;
-        max-height: 400px;
-        background: var(--secondary-background-color, #f5f5f5);
+        align-content: flex-start;
       }
       .resource-menu figure {
         margin: 0 !important;
@@ -983,14 +1034,18 @@ class GalleryCard extends LitElement {
         .menu-responsive .resource-viewer {
           flex: 3;
         }
-        .menu-responsive .resource-menu {
+        .menu-responsive .resource-menu-container {
           flex: 1;
           max-height: none;
+        }
+        .menu-responsive .resource-menu {
           grid-template-columns: 1fr;
         }
       }
-      .menu-bottom .resource-menu {
+      .menu-bottom .resource-menu-container {
         order: 2;
+      }
+      .menu-bottom .resource-menu {
         grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
         display: flex;
         overflow-x: auto;
@@ -1000,13 +1055,15 @@ class GalleryCard extends LitElement {
         min-width: 120px;
       }
       .menu-right { flex-direction: row; }
-      .menu-right .resource-menu { width: 25%; max-height: none; grid-template-columns: 1fr; }
+      .menu-right .resource-menu-container { width: 25%; max-height: none; }
+      .menu-right .resource-menu { grid-template-columns: 1fr; }
       .menu-left { flex-direction: row-reverse; }
-      .menu-left .resource-menu { width: 25%; max-height: none; grid-template-columns: 1fr; }
+      .menu-left .resource-menu-container { width: 25%; max-height: none; }
+      .menu-left .resource-menu { grid-template-columns: 1fr; }
       .menu-top { flex-direction: column-reverse; }
       .menu-top .resource-menu { display: flex; overflow-x: auto; overflow-y: hidden; }
       .menu-top .resource-menu figure { min-width: 120px; }
-      .menu-hidden .resource-menu { display: none; }
+      .menu-hidden .resource-menu-container { display: none; }
 
       /* Modal */
       .modal {
