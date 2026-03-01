@@ -105,7 +105,7 @@ class GalleryCard extends LitElement {
                   `;
               })}
             ${this._itemsToShow < resources.length ? 
-              html`<div class="load-more" @click="${this._loadMore}">加载更多... (${resources.length - this._itemsToShow} 剩余)</div>` : 
+              html`<div class="load-more" @click="${this._loadMore}">继续加载 (${resources.length - this._itemsToShow})</div>` : 
               html``
             }
           </div>
@@ -865,8 +865,8 @@ class GalleryCard extends LitElement {
         display: flex;
         justify-content: center;
         align-items: center;
+        height: calc(100vh - 56px);
         overflow: hidden;
-        flex: 3;
         align-self: flex-start;
       }
       .resource-menu-container {

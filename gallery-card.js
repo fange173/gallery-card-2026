@@ -47,7 +47,7 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
                     <figcaption>${e.caption} <span class="duration"></span></figcaption>
                     </figure>
                   `))}
-            ${this._itemsToShow<t.length?Y`<div class="load-more" @click="${this._loadMore}">加载更多... (${t.length-this._itemsToShow} 剩余)</div>`:Y``}
+            ${this._itemsToShow<t.length?Y`<div class="load-more" @click="${this._loadMore}">继续加载 (${t.length-this._itemsToShow})</div>`:Y``}
           </div>
         </div>
         <div id="imageModal" class="modal" @touchstart="${e=>this._handleTouchStart(e)}" @touchmove="${e=>this._handleTouchMove(e)}">
@@ -82,8 +82,8 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
         display: flex;
         justify-content: center;
         align-items: center;
+        height: calc(100vh - 56px);
         overflow: hidden;
-        flex: 3;
         align-self: flex-start;
       }
       .resource-menu-container {
