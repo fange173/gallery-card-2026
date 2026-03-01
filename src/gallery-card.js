@@ -31,6 +31,7 @@ class GalleryCard extends LitElement {
 
   render() {
     const menuAlignment = (this.config.menu_alignment || "responsive").toLowerCase();
+    const resources = this.resources || [];
 
     return html`
       ${this.errors === undefined ? html`` :
@@ -62,7 +63,7 @@ class GalleryCard extends LitElement {
                 ${this.config.show_zoom ? html`<a class="zoom-link" href= "${this._currentResource().url}" target="_blank">Zoom</a>` : html`` }                  
               </div>
             </figcaption>
-          </figure>  
+          </figure>
           <div class="viewer-nav">
             <div class="nav-text-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex-1)}">后退</div> 
             <div class="nav-text-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex+1)}">前进</div> 
@@ -81,7 +82,7 @@ class GalleryCard extends LitElement {
                 html`` : html`<span class="action-text btn-reload" @click="${() => this._loadResources(this._hass)}">刷新</span>` }
           </div>
           <div class="resource-menu">
-            ${this.resources.slice(0, this._itemsToShow).map((resource, index) => {
+            ${resources.slice(0, this._itemsToShow).map((resource, index) => {
                   return html`
                     <figure style="margin:5px;" id="resource${index}" data-imageIndex="${index}" @click="${() => this._selectResource(index)}" class="${(index === this.currentResourceIndex) ? 'selected' : ''}">
                     ${
@@ -103,8 +104,8 @@ class GalleryCard extends LitElement {
                     </figure>
                   `;
               })}
-            ${this._itemsToShow < this.resources.length ? 
-              html`<div class="load-more" @click="${this._loadMore}">加载更多... (${this.resources.length - this._itemsToShow} 剩余)</div>` : 
+            ${this._itemsToShow < resources.length ? 
+              html`<div class="load-more" @click="${this._loadMore}">加载更多... (${resources.length - this._itemsToShow} 剩余)</div>` : 
               html``
             }
           </div>
@@ -881,6 +882,11 @@ class GalleryCard extends LitElement {
         padding: 8px 16px;
         border-bottom: 1px solid var(--divider-color, #e0e0e0);
         background: var(--gallery-card-bg-color);
+      }
+      @media all and (max-width: 599px) {
+        .card-header-actions {
+          display: none;
+        }
       }
       .action-text {
         cursor: pointer;
