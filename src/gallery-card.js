@@ -20,9 +20,9 @@ class GalleryCard extends LitElement {
 
   constructor() {
     super();
-    this.resources = [];
+    this.resources = undefined;
     this.currentResourceIndex = 0;
-    this._itemsToShow = 10;
+    this._itemsToShow = 10; 
     this.selectedDate = null;
     this._isDateFiltered = false;
     this._isInitialLoad = false;
@@ -64,8 +64,8 @@ class GalleryCard extends LitElement {
             </figcaption>
           </figure>  
           <div class="viewer-nav">
-            <div class="nav-text-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex-1)}">上一个</div> 
-            <div class="nav-text-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex+1)}">下一个</div> 
+            <div class="nav-text-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex-1)}">后退</div> 
+            <div class="nav-text-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex+1)}">前进</div> 
           </div>
         </div>
         <div class="resource-menu-container">
@@ -74,11 +74,11 @@ class GalleryCard extends LitElement {
                 html`` : html`
                   <div class="date-filter-container">
                     <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
-                    ${this._isDateFiltered ? html`<span class="action-text btn-clear-date" @click="${this._clearDateFilter}">清除筛选</span>` : html``}
+                    ${this._isDateFiltered ? html`<span class="action-text btn-clear-date" @click="${this._clearDateFilter}">清除</span>` : html``}
                   </div>
                 ` }
             ${!(this.config.show_reload ?? false) ?
-                html`` : html`<span class="action-text btn-reload" @click="${() => this._loadResources(this._hass)}">刷新列表</span>` }
+                html`` : html`<span class="action-text btn-reload" @click="${() => this._loadResources(this._hass)}">刷新</span>` }
           </div>
           <div class="resource-menu">
             ${this.resources.slice(0, this._itemsToShow).map((resource, index) => {
@@ -849,7 +849,6 @@ class GalleryCard extends LitElement {
       ha-card {
         height: 100%;
         max-height: 100%;
-        overflow: hidden;
         display: flex;
         flex-direction: column;
         background: var(--gallery-card-bg-color);
@@ -865,17 +864,15 @@ class GalleryCard extends LitElement {
         display: flex;
         justify-content: center;
         align-items: center;
-        min-height: 400px;
-        max-height: 85vh;
         overflow: hidden;
-        flex: 1;
+        flex: 3;
         align-self: flex-start;
       }
       .resource-menu-container {
         display: flex;
         flex-direction: column;
         background: var(--secondary-background-color, #f5f5f5);
-        min-height: 200px;
+        overflow-y: auto;
       }
       .card-header-actions {
         display: grid;
@@ -923,7 +920,6 @@ class GalleryCard extends LitElement {
       }
       .resource-viewer figure {
         width: 100%;
-        height: 100%;
         margin: 0 !important;
         display: flex;
         flex-direction: column;
@@ -932,7 +928,6 @@ class GalleryCard extends LitElement {
       }
       img, video {
         max-width: 100%;
-        max-height: 100%;
         width: auto;
         height: auto;
         object-fit: contain;
