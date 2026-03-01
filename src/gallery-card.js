@@ -22,10 +22,10 @@ class GalleryCard extends LitElement {
     super();
     this.resources = [];
     this.currentResourceIndex = 0;
-    this._itemsToShow = 30; // 默认显示30个，按需加载
-    this.selectedDate = new Date();
-    this._isDateFiltered = true;
-    this._isInitialLoad = true;
+    this._itemsToShow = 10;
+    this.selectedDate = null;
+    this._isDateFiltered = false;
+    this._isInitialLoad = false;
     this._isLoading = false;
   }
 
@@ -64,8 +64,8 @@ class GalleryCard extends LitElement {
             </figcaption>
           </figure>  
           <div class="viewer-nav">
-            <ha-icon-button class="nav-btn nav-left" icon="mdi:chevron-left" @click="${() => this._selectResource(this.currentResourceIndex-1)}"></ha-icon-button> 
-            <ha-icon-button class="nav-btn nav-right" icon="mdi:chevron-right" @click="${() => this._selectResource(this.currentResourceIndex+1)}"></ha-icon-button> 
+            <div class="nav-text-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex-1)}">上一个</div> 
+            <div class="nav-text-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex+1)}">下一个</div> 
           </div>
         </div>
         <div class="resource-menu-container">
@@ -74,11 +74,11 @@ class GalleryCard extends LitElement {
                 html`` : html`
                   <div class="date-filter-container">
                     <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
-                    ${this._isDateFiltered ? html`<ha-icon-button icon="mdi:close-circle" class="btn-clear-date" @click="${this._clearDateFilter}"></ha-icon-button>` : html``}
+                    ${this._isDateFiltered ? html`<span class="action-text btn-clear-date" @click="${this._clearDateFilter}">清除筛选</span>` : html``}
                   </div>
                 ` }
             ${!(this.config.show_reload ?? false) ?
-                html`` : html`<ha-icon-button class="btn-reload" icon="mdi:refresh" @click="${() => this._loadResources(this._hass)}"></ha-icon-button>` }
+                html`` : html`<span class="action-text btn-reload" @click="${() => this._loadResources(this._hass)}">刷新列表</span>` }
           </div>
           <div class="resource-menu">
             ${this.resources.slice(0, this._itemsToShow).map((resource, index) => {
@@ -175,6 +175,8 @@ class GalleryCard extends LitElement {
     }
 
     this.config = config;
+    this._itemsToShow = this.config.items_per_page || 10;
+    
     if (this.config.entity) {
       if (!this.config.entities) {
         this.config = { ...this.config, entities: [] };
@@ -218,7 +220,8 @@ class GalleryCard extends LitElement {
   }
 
   _loadMore() {
-    this._itemsToShow += 30;
+    const step = this.config.items_per_page || 10;
+    this._itemsToShow += step;
   }
 
   _selectResource(index, fromSlideshow) {
@@ -824,7 +827,7 @@ class GalleryCard extends LitElement {
   }
 
   _formatDateForInput(date) {
-    if (!date) date = new Date();
+    if (!date) return "";
     const yyyy = date.getFullYear();
     const mm = String(date.getMonth() + 1).padStart(2, '0');
     const dd = String(date.getDate()).padStart(2, '0');
@@ -853,32 +856,60 @@ class GalleryCard extends LitElement {
         border-radius: var(--ha-card-border-radius, 12px);
         box-shadow: var(--ha-card-box-shadow, 0 2px 2px 0 rgba(0,0,0,0.14), 0 1px 5px 0 rgba(0,0,0,0.12), 0 3px 1px -2px rgba(0,0,0,0.2));
       }
+      .resource-viewer {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        width: 100%;
+        background: #000;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        min-height: 400px;
+        max-height: 85vh;
+        overflow: hidden;
+        flex: 1;
+        align-self: flex-start;
+      }
       .resource-menu-container {
         display: flex;
         flex-direction: column;
         background: var(--secondary-background-color, #f5f5f5);
-        max-height: 400px;
+        min-height: 200px;
       }
       .card-header-actions {
-        display: flex;
-        justify-content: flex-end;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
         align-items: center;
-        padding: 4px 12px;
-        gap: 8px;
+        padding: 8px 16px;
         border-bottom: 1px solid var(--divider-color, #e0e0e0);
+        background: var(--gallery-card-bg-color);
+      }
+      .action-text {
+        cursor: pointer;
+        color: var(--gallery-card-primary-color);
+        font-size: 0.9em;
+        font-weight: 500;
+        padding: 4px 8px;
+        border-radius: 4px;
+        transition: background 0.2s;
+        white-space: nowrap;
+      }
+      .action-text:hover {
+        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
+      }
+      .btn-clear-date {
+        color: var(--error-color, #db4437);
+        margin-left: 4px;
       }
       .date-filter-container {
+        grid-column: 2;
         display: flex;
         align-items: center;
         background: var(--secondary-background-color, #f5f5f5);
         border-radius: 20px;
-        padding: 2px 4px 2px 12px;
+        padding: 4px 16px;
         border: 1px solid var(--divider-color, #e0e0e0);
-      }
-      .btn-clear-date {
-        --mdc-icon-button-size: 32px;
-        --mdc-icon-size: 18px;
-        color: var(--error-color, #db4437);
       }
       .date-picker {
         border: none;
@@ -886,31 +917,24 @@ class GalleryCard extends LitElement {
         color: var(--gallery-card-text-color);
         font-family: inherit;
         outline: none;
-        font-size: 0.9em;
+        font-size: 0.95em;
         cursor: pointer;
-      }
-      .resource-viewer {
-        position: relative;
-        width: 100%;
-        background: #000;
-        display: flex;
-        justify-content: center;
-        align-items: center;
-        min-height: 200px;
-        max-height: 70vh;
-        overflow: hidden;
-        flex: 1;
+        text-align: center;
       }
       .resource-viewer figure {
         width: 100%;
+        height: 100%;
         margin: 0 !important;
         display: flex;
         flex-direction: column;
+        justify-content: center;
         align-items: center;
       }
       img, video {
         max-width: 100%;
         max-height: 100%;
+        width: auto;
+        height: auto;
         object-fit: contain;
         transition: opacity 0.3s ease;
       }
@@ -951,19 +975,28 @@ class GalleryCard extends LitElement {
         padding: 0 10px;
         pointer-events: none;
       }
-      .nav-btn {
+      .nav-text-btn {
         pointer-events: auto;
-        background: rgba(255, 255, 255, 0.2);
+        background: rgba(0, 0, 0, 0.5);
         color: #fff;
-        border-radius: 50%;
+        padding: 8px 16px;
+        border-radius: 4px;
+        cursor: pointer;
         opacity: 0;
         transition: all 0.3s ease;
+        user-select: none;
+        font-weight: 500;
+        font-size: 0.9em;
       }
-      .resource-viewer:hover .nav-btn {
+      .resource-viewer:hover .nav-text-btn {
         opacity: 1;
-        background: rgba(255, 255, 255, 0.4);
+      }
+      .nav-text-btn:hover {
+        background: rgba(0, 0, 0, 0.8);
       }
       .btn-reload {
+        grid-column: 3;
+        justify-self: end;
         color: var(--gallery-card-primary-color);
       }
       .resource-menu {
