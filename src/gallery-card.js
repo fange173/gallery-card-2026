@@ -40,7 +40,7 @@ class GalleryCard extends LitElement {
          })}
       <ha-card class="menu-${menuAlignment}">
         <div class="resource-viewer" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
-          <div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
+          <figure style="margin:5px;">
             ${
                 this._currentResource().isHass ?
                 html`
@@ -55,7 +55,7 @@ class GalleryCard extends LitElement {
                 html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay} src="${this._currentResource().url}#t=0.1" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}" 
                             @ended="${() => this._videoHasEnded()}" preload="metadata"></video>`
               }
-          </div>
+          </figure>
           <div class="viewer-nav">
             <div class="nav-text-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex-1)}">上一个</div> 
             <div class="nav-text-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex+1)}">下一个</div> 
@@ -86,7 +86,7 @@ class GalleryCard extends LitElement {
                         this._isImageExtension(resource.extension) ?
                         html`<img class="lzy_img" src="/local/community/gallery-card/placeholder.jpg" data-src="${resource.url}"/>` :
                           (this.config.video_preload ?? true) ?
-                          html`<video preload="none" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at }" @canplay="${() => this._downloadNextMenuVideo()}" preload="metadata"></video>` :
+                          html`<video preload="none" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at }" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${() => this._downloadNextMenuVideo()}" preload="metadata"></video>` :
                             html`<div style="text-align: center"><div class="lzy_img"><ha-icon id="play" icon="mdi:movie-play-outline"></ha-icon></div></div>`
                       }
                     <figcaption style="font-size: 1.1em; font-weight: 500;">${resource.caption}</figcaption>
@@ -113,11 +113,6 @@ class GalleryCard extends LitElement {
     const imageArray = this.shadowRoot.querySelectorAll('img.lzy_img');
 
     for (const v of imageArray) {
-        this.imageObserver.observe(v);
-    }
-    const videoArray = this.shadowRoot.querySelectorAll('video.lzy_video');
-
-    for (const v of videoArray) {
         this.imageObserver.observe(v);
     }
     // changedProperties.forEach((oldValue, propName) => {
@@ -262,6 +257,13 @@ class GalleryCard extends LitElement {
   }
 
   _videoMetadataLoaded(event) {
+    const showDuration = this.config.show_duration ?? true;
+    const durationElement = event.target.closest('figure')?.querySelector(".duration");
+
+    if (!Number.isNaN(Number.parseInt(event.target.duration)) && showDuration && durationElement) {
+      durationElement.innerHTML = "[" + this._getFormattedVideoDuration(event.target.duration) + "]";
+    }
+
     if (this.config.video_muted)
       event.target.muted = "muted";
   }
@@ -861,15 +863,9 @@ class GalleryCard extends LitElement {
         box-shadow: inset 0 0 80px rgba(0,0,0,0.4);
         pointer-events: none;
       }
-      .resource-viewer div {
+      .resource-viewer figure {
         width: 100%;
         height: 100%;
-        margin: 0 !important;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        align-items: center;
-        position: relative;
       }
       img, video {
         max-width: 100%;
@@ -1050,7 +1046,7 @@ class GalleryCard extends LitElement {
       .load-more {
         grid-column: 1 / -1;
         text-align: center;
-        padding: 12px;
+        padding: 6px;
         cursor: pointer;
         color: var(--gallery-card-primary-color);
         font-weight: 500;
