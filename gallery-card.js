@@ -25,15 +25,14 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
           </div>
         </div>
         <div class="resource-menu-container">
-          <div class="card-header-actions">
-            ${this.config.enable_date_search?Y`
-                  <div class="date-filter-container">
-                    <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
-                    ${this._isDateFiltered?Y`<span class="action-text btn-clear-date" @click="${this._clearDateFilter}">清除</span>`:Y``}
-                  </div>
-                `:Y``}
-            ${this.config.show_reload?Y`<span class="action-text btn-reload" @click="${()=>this._loadResources(this._hass)}">刷新</span>`:Y``}
-          </div>
+          ${this.config.enable_date_search?Y`
+            <div class="card-header-actions">
+              <div class="date-filter-container">
+                <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
+              </div>
+              ${this._isDateFiltered?Y`<span class="action-text btn-clear-date" @click="${this._clearDateFilter}">清除</span>`:Y``}
+            </div>
+          `:Y``}
           <div class="resource-menu">
             ${t.slice(0,this._itemsToShow).map(((e,t)=>Y`
                     <figure style="margin:5px;" id="resource${t}" data-imageIndex="${t}" @click="${()=>this._selectResource(t)}" class="${t===this.currentResourceIndex?"selected":""}">
@@ -84,8 +83,7 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
         align-items: center;
         overflow: hidden;
         align-self: flex-start;
-        aspect-ratio: 16 / 9;
-        max-height: calc(100vh - var(--header-height, 56px) - 32px);
+        height: calc(100vh - 56px);
       }
       .resource-viewer::after {
         content: "";
@@ -149,8 +147,9 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
         background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
       }
       .btn-clear-date {
+        grid-column: 3;
+        justify-self: end;
         color: var(--error-color, #db4437);
-        margin-left: 4px;
       }
       .date-filter-container {
         grid-column: 2;
@@ -229,11 +228,6 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
       }
       .nav-text-btn:hover {
         background: rgba(0, 0, 0, 0.8);
-      }
-      .btn-reload {
-        grid-column: 3;
-        justify-self: end;
-        color: var(--gallery-card-primary-color);
       }
       .resource-menu {
         padding: 12px;

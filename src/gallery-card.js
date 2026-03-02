@@ -70,17 +70,14 @@ class GalleryCard extends LitElement {
           </div>
         </div>
         <div class="resource-menu-container">
-          <div class="card-header-actions">
-            ${!(this.config.enable_date_search ?? false) ?
-                html`` : html`
-                  <div class="date-filter-container">
-                    <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
-                    ${this._isDateFiltered ? html`<span class="action-text btn-clear-date" @click="${this._clearDateFilter}">清除</span>` : html``}
-                  </div>
-                ` }
-            ${!(this.config.show_reload ?? false) ?
-                html`` : html`<span class="action-text btn-reload" @click="${() => this._loadResources(this._hass)}">刷新</span>` }
-          </div>
+          ${(this.config.enable_date_search ?? false) ? html`
+            <div class="card-header-actions">
+              <div class="date-filter-container">
+                <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
+              </div>
+              ${this._isDateFiltered ? html`<span class="action-text btn-clear-date" @click="${this._clearDateFilter}">清除</span>` : html``}
+            </div>
+          ` : html``}
           <div class="resource-menu">
             ${resources.slice(0, this._itemsToShow).map((resource, index) => {
                   return html`
@@ -867,8 +864,7 @@ class GalleryCard extends LitElement {
         align-items: center;
         overflow: hidden;
         align-self: flex-start;
-        aspect-ratio: 16 / 9;
-        max-height: calc(100vh - var(--header-height, 56px) - 32px);
+        height: calc(100vh - 56px);
       }
       .resource-viewer::after {
         content: "";
@@ -932,8 +928,9 @@ class GalleryCard extends LitElement {
         background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
       }
       .btn-clear-date {
+        grid-column: 3;
+        justify-self: end;
         color: var(--error-color, #db4437);
-        margin-left: 4px;
       }
       .date-filter-container {
         grid-column: 2;
@@ -1012,11 +1009,6 @@ class GalleryCard extends LitElement {
       }
       .nav-text-btn:hover {
         background: rgba(0, 0, 0, 0.8);
-      }
-      .btn-reload {
-        grid-column: 3;
-        justify-self: end;
-        color: var(--gallery-card-primary-color);
       }
       .resource-menu {
         padding: 12px;
