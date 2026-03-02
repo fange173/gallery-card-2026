@@ -40,7 +40,7 @@ class GalleryCard extends LitElement {
          })}
       <ha-card class="menu-${menuAlignment}">
         <div class="resource-viewer" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
-          <figure style="margin:5px;">
+          <div style="width: 100%; height: 100%; display: flex; align-items: center; justify-content: center;">
             ${
                 this._currentResource().isHass ?
                 html`
@@ -55,15 +55,7 @@ class GalleryCard extends LitElement {
                 html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay} src="${this._currentResource().url}#t=0.1" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}" 
                             @ended="${() => this._videoHasEnded()}" preload="metadata"></video>`
               }
-            <figcaption>
-              <div class="caption-text">${this._currentResource().caption}</div>
-              <div class="caption-details">
-                ${this._isImageExtension(this._currentResource().extension) ?
-                    html`` : html`<span class="duration"></span> ` }                  
-                ${this.config.show_zoom ? html`<a class="zoom-link" href= "${this._currentResource().url}" target="_blank">Zoom</a>` : html`` }                  
-              </div>
-            </figcaption>
-          </figure>
+          </div>
           <div class="viewer-nav">
             <div class="nav-text-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex-1)}">上一个</div> 
             <div class="nav-text-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex+1)}">下一个</div> 
@@ -94,10 +86,10 @@ class GalleryCard extends LitElement {
                         this._isImageExtension(resource.extension) ?
                         html`<img class="lzy_img" src="/local/community/gallery-card/placeholder.jpg" data-src="${resource.url}"/>` :
                           (this.config.video_preload ?? true) ?
-                          html`<video preload="none" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at }" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${() => this._downloadNextMenuVideo()}" preload="metadata"></video>` :
+                          html`<video preload="none" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at }" @canplay="${() => this._downloadNextMenuVideo()}" preload="metadata"></video>` :
                             html`<div style="text-align: center"><div class="lzy_img"><ha-icon id="play" icon="mdi:movie-play-outline"></ha-icon></div></div>`
                       }
-                    <figcaption>${resource.caption} <span class="duration"></span></figcaption>
+                    <figcaption style="font-size: 1.1em; font-weight: 500;">${resource.caption}</figcaption>
                     </figure>
                   `;
               })}
@@ -270,13 +262,6 @@ class GalleryCard extends LitElement {
   }
 
   _videoMetadataLoaded(event) {
-    const showDuration = this.config.show_duration ?? true;
-    const durationElement = event.target.closest('figure')?.querySelector(".duration");
-
-    if (!Number.isNaN(Number.parseInt(event.target.duration)) && showDuration && durationElement) {
-      durationElement.innerHTML = "[" + this._getFormattedVideoDuration(event.target.duration) + "]";
-    }
-
     if (this.config.video_muted)
       event.target.muted = "muted";
   }
@@ -876,7 +861,7 @@ class GalleryCard extends LitElement {
         box-shadow: inset 0 0 80px rgba(0,0,0,0.4);
         pointer-events: none;
       }
-      .resource-viewer figure {
+      .resource-viewer div {
         width: 100%;
         height: 100%;
         margin: 0 !important;
