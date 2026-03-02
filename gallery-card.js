@@ -36,7 +36,7 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
                             .cameraView=${"live"}
                           ></hui-image>
                         `:this._isImageExtension(e.extension)?L`<img class="lzy_img" src="/local/community/gallery-card/placeholder.jpg" data-src="${e.url}"/>`:this.config.video_preload??1?L`<video preload="none" data-src="${e.url}#t=${void 0===this.config.preview_video_at?.1:this.config.preview_video_at}" @loadedmetadata="${e=>this._videoMetadataLoaded(e)}" @canplay="${()=>this._downloadNextMenuVideo()}" preload="metadata"></video>`:L`<div style="text-align: center"><div class="lzy_img"><ha-icon id="play" icon="mdi:movie-play-outline"></ha-icon></div></div>`}
-                    <figcaption style="font-size: 1.1em; font-weight: 500;">${e.caption}</figcaption>
+                    <figcaption>${e.caption}</figcaption>
                     </figure>
                   `))}
             ${this._itemsToShow<t.length?L`<div class="load-more" @click="${this._loadMore}">更多 (${t.length-this._itemsToShow})</div>`:L``}
@@ -267,6 +267,11 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+      @media all and (min-width: 601px) {
+        .resource-menu figcaption {
+          font-size: 1.1em;
+        }
       }
       .load-more {
         grid-column: 1 / -1;

@@ -89,7 +89,7 @@ class GalleryCard extends LitElement {
                           html`<video preload="none" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at }" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${() => this._downloadNextMenuVideo()}" preload="metadata"></video>` :
                             html`<div style="text-align: center"><div class="lzy_img"><ha-icon id="play" icon="mdi:movie-play-outline"></ha-icon></div></div>`
                       }
-                    <figcaption style="font-size: 1.1em; font-weight: 500;">${resource.caption}</figcaption>
+                    <figcaption>${resource.caption}</figcaption>
                     </figure>
                   `;
               })}
@@ -1058,6 +1058,11 @@ class GalleryCard extends LitElement {
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+      }
+      @media all and (min-width: 601px) {
+        .resource-menu figcaption {
+          font-size: 1.1em;
+        }
       }
       .load-more {
         grid-column: 1 / -1;
