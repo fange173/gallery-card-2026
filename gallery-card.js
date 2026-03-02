@@ -75,7 +75,7 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
       }
       .resource-viewer {
         position: sticky;
-        top: 0;
+        top: var(--header-height, 56px);
         z-index: 2;
         width: 100%;
         background: radial-gradient(circle, #2c2c2c 0%, #111 100%);
@@ -85,7 +85,7 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
         overflow: hidden;
         align-self: flex-start;
         aspect-ratio: 16 / 9;
-        max-height: 80vh;
+        max-height: calc(100vh - var(--header-height, 56px) - 32px);
       }
       .resource-viewer::after {
         content: "";
@@ -123,7 +123,12 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
         overflow-y: auto;
       }
       .card-header-actions {
-        display: none;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        align-items: center;
+        padding: 8px 16px;
+        border-bottom: 1px solid var(--divider-color, #e0e0e0);
+        background: var(--gallery-card-bg-color);
       }
       @media all and (max-width: 599px) {
         .card-header-actions {
