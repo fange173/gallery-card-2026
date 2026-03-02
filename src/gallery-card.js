@@ -861,23 +861,38 @@ class GalleryCard extends LitElement {
         top: 0;
         z-index: 2;
         width: 100%;
-        background: #000;
+        background: radial-gradient(circle, #2c2c2c 0%, #111 100%);
         display: flex;
         justify-content: center;
         align-items: center;
         overflow: hidden;
         align-self: flex-start;
+        aspect-ratio: 16 / 9;
+        max-height: 85vh;
+      }
+      .resource-viewer::after {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        box-shadow: inset 0 0 80px rgba(0,0,0,0.4);
+        pointer-events: none;
       }
       .resource-viewer figure {
         width: 100%;
+        height: 100%;
         margin: 0 !important;
         display: flex;
         flex-direction: column;
         justify-content: center;
         align-items: center;
+        position: relative;
       }
       img, video {
         max-width: 100%;
+        max-height: 100%;
         width: auto;
         height: auto;
         object-fit: contain;
@@ -940,9 +955,12 @@ class GalleryCard extends LitElement {
         text-align: center;
       }
       figcaption {
-        width: 100%;
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
         padding: 12px;
-        background: rgba(0, 0, 0, 0.7);
+        background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
         color: #fff;
         text-align: center;
         box-sizing: border-box;
@@ -1001,30 +1019,39 @@ class GalleryCard extends LitElement {
         color: var(--gallery-card-primary-color);
       }
       .resource-menu {
-        padding: 8px;
+        padding: 12px;
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
-        gap: 8px;
+        grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+        gap: 12px;
         overflow-y: auto;
         align-content: flex-start;
+      }
+      .resource-menu::-webkit-scrollbar {
+        width: 4px;
+      }
+      .resource-menu::-webkit-scrollbar-thumb {
+        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.3);
+        border-radius: 4px;
       }
       .resource-menu figure {
         margin: 0 !important;
         cursor: pointer;
-        border-radius: 8px;
+        border-radius: 12px;
         overflow: hidden;
-        background: #000;
+        background: #222;
         transition: transform 0.2s ease, box-shadow 0.2s ease;
         position: relative;
         aspect-ratio: 16/9;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
       }
       .resource-menu figure:hover {
-        transform: scale(1.03);
-        box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+        transform: translateY(-2px);
+        box-shadow: 0 6px 15px rgba(0,0,0,0.4);
       }
       .resource-menu figure.selected {
-        outline: 3px solid var(--gallery-card-primary-color);
-        outline-offset: -3px;
+        outline: 2px solid var(--gallery-card-primary-color);
+        outline-offset: 2px;
+        box-shadow: 0 0 0 4px rgba(var(--rgb-primary-color, 3, 169, 244), 0.2);
       }
       .resource-menu img, .resource-menu video {
         width: 100%;
