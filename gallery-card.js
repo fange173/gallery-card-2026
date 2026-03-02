@@ -20,8 +20,8 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
             </figcaption>
           </figure>
           <div class="viewer-nav">
-            <div class="nav-text-btn nav-left" @click="${()=>this._selectResource(this.currentResourceIndex-1)}">后退</div> 
-            <div class="nav-text-btn nav-right" @click="${()=>this._selectResource(this.currentResourceIndex+1)}">前进</div> 
+            <div class="nav-text-btn nav-left" @click="${()=>this._selectResource(this.currentResourceIndex-1)}">上一个</div> 
+            <div class="nav-text-btn nav-right" @click="${()=>this._selectResource(this.currentResourceIndex+1)}">下一个</div> 
           </div>
         </div>
         <div class="resource-menu-container">
@@ -47,7 +47,7 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
                     <figcaption>${e.caption} <span class="duration"></span></figcaption>
                     </figure>
                   `))}
-            ${this._itemsToShow<t.length?Y`<div class="load-more" @click="${this._loadMore}">继续加载 (${t.length-this._itemsToShow})</div>`:Y``}
+            ${this._itemsToShow<t.length?Y`<div class="load-more" @click="${this._loadMore}">更多 (${t.length-this._itemsToShow})</div>`:Y``}
           </div>
         </div>
         <div id="imageModal" class="modal" @touchstart="${e=>this._handleTouchStart(e)}" @touchmove="${e=>this._handleTouchMove(e)}">
@@ -85,7 +85,7 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
         overflow: hidden;
         align-self: flex-start;
         aspect-ratio: 16 / 9;
-        max-height: 85vh;
+        max-height: 80vh;
       }
       .resource-viewer::after {
         content: "";
@@ -123,12 +123,7 @@ const e=window,t=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"
         overflow-y: auto;
       }
       .card-header-actions {
-        display: grid;
-        grid-template-columns: 1fr auto 1fr;
-        align-items: center;
-        padding: 8px 16px;
-        border-bottom: 1px solid var(--divider-color, #e0e0e0);
-        background: var(--gallery-card-bg-color);
+        display: none;
       }
       @media all and (max-width: 599px) {
         .card-header-actions {
