@@ -376,7 +376,11 @@ class GalleryCard extends LitElement {
   }
 
   _handleDateChange(event) {
-    this.selectedDate = event.target.valueAsDate;
+    if (event.target.value) {
+      this.selectedDate = dayjs(event.target.value).toDate();
+    } else {
+      this.selectedDate = null;
+    }
     this._isDateFiltered = this.selectedDate !== null;
     this._loadResources(this._hass);
   }
@@ -475,6 +479,14 @@ class GalleryCard extends LitElement {
       let resources = await Promise.all(fetchAll());
       let flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
 
+      if (filterForDate) {
+        const selectedDateStr = dayjs(this.selectedDate).format("YYYY-MM-DD");
+        flatResources = flatResources.filter(resource => {
+          if (!resource.date || !dayjs(resource.date).isValid()) return true;
+          return dayjs(resource.date).format("YYYY-MM-DD") === selectedDateStr;
+        });
+      }
+
       // 自动回溯逻辑
       if (this._isInitialLoad && filterForDate && flatResources.length === 0) {
         let daysBack = 0;
@@ -486,6 +498,14 @@ class GalleryCard extends LitElement {
           this.selectedDate = tempDate.toDate();
           resources = await Promise.all(fetchAll());
           flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
+
+          if (filterForDate) {
+            const selectedDateStr = dayjs(this.selectedDate).format("YYYY-MM-DD");
+            flatResources = flatResources.filter(resource => {
+              if (!resource.date || !dayjs(resource.date).isValid()) return true;
+              return dayjs(resource.date).format("YYYY-MM-DD") === selectedDateStr;
+            });
+          }
         }
         
         // 如果回溯了30天还没找到，则显示全部
@@ -813,11 +833,7 @@ class GalleryCard extends LitElement {
 
   _formatDateForInput(date) {
     if (!date) return "";
-    const yyyy = date.getFullYear();
-    const mm = String(date.getMonth() + 1).padStart(2, '0');
-    const dd = String(date.getDate()).padStart(2, '0');
-
-    return `${yyyy}-${mm}-${dd}`;
+    return dayjs(date).format("YYYY-MM-DD");
   }
 
 
