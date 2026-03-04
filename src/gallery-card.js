@@ -67,7 +67,7 @@ class GalleryCard extends LitElement {
               <div class="date-filter-container">
                 <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
               </div>
-              ${this._isDateFiltered ? html`<span class="action-text btn-clear-date" @click="${this._clearDateFilter}">清除</span>` : html``}
+              <span class="action-text btn-clear-date" @click="${this._clearDateFilter}" style="visibility: ${this._isDateFiltered ? 'visible' : 'hidden'};">清除</span>
             </div>
           ` : html``}
           <div class="resource-menu">
@@ -884,10 +884,8 @@ class GalleryCard extends LitElement {
         height: 100%;
       }
       img, video {
-        max-width: 100%;
-        max-height: 100%;
-        width: auto;
-        height: auto;
+        width: 100%;
+        height: 100%;
         object-fit: contain;
         display: block;
         transition: opacity 0.3s ease;
