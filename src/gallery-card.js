@@ -52,7 +52,7 @@ class GalleryCard extends LitElement {
         this._isImageExtension(this._currentResource().extension) ?
           html`<img @click="${event => this._popupImage(event)}" src="${this._currentResource().url}"/>` :
           html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay} src="${this._currentResource().url}#t=0.1" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}" 
-                            @ended="${() => this._videoHasEnded()}" preload="metadata"></video>`
+                            @ended="${() => this._videoHasEnded()}" preload="metadata" playsinline webkit-playsinline></video>`
       }
           </figure>
           <div class="viewer-nav">
@@ -845,7 +845,8 @@ class GalleryCard extends LitElement {
         align-items: center;
         overflow: hidden;
         align-self: flex-start;
-        height: calc(100vh - 56px);
+        height: calc(100vh - var(--header-height, 56px));
+        max-height: calc(100vh - var(--header-height, 56px));
       }
       .resource-viewer::after {
         content: "";
