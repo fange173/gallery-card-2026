@@ -2,11 +2,11 @@
   "name": "gallery-card-2026",
   "version": "2026.0.1",
   "description": "Modern Gallery Card 2026 for Home Assistant Lovelace",
-  "main": "dist/gallery-card.js",
+  "main": "gallery-card.js",
   "scripts": {
     "build": "npm run lint && npm run rollup",
     "rollup": "rollup -c",
-    "babel": "babel dist/gallery-card.js --out-file dist/gallery-card.js",
+    "babel": "babel gallery-card.js --out-file gallery-card.js",
     "lint": "eslint --fix src/*.js",
     "watch": "rollup -c --watch",
     "postversion": "npm run build",

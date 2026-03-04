@@ -31,7 +31,7 @@ export default [
   {
     input: 'src/gallery-card.js',
     output: {
-      dir: './dist',
+      file: 'gallery-card.js',
       format: 'es',
       sourcemap: dev ? true : false,
     },

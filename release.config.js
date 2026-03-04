@@ -27,13 +27,13 @@ module.exports = {
     [
       '@semantic-release/git',
       {
-        assets: ['CHANGELOG.md', 'README.md', 'package.json', 'package-lock.json'],
+        assets: ['CHANGELOG.md', 'README.md', 'package.json', 'package-lock.json', 'gallery-card.js'],
       },
     ],
     [
       '@semantic-release/github',
       {
-        assets: ['dist/*.js', '*.jpg'],
+        assets: ['gallery-card.js', '*.jpg'],
       },
     ],
   ],
