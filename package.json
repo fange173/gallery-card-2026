@@ -22,9 +22,9 @@
   "author": "lukelalo",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/lukelalo/gallery-card/issues"
+    "url": "https://github.com/fange173/gallery-card-2026/issues"
   },
-  "homepage": "https://github.com/lukelalo/gallery-card#readme",
+  "homepage": "https://github.com/fange173/gallery-card-2026#readme",
   "devDependencies": {
     "babel-loader": "^9.1.3",
     "@babel/core": "^7.24.4",

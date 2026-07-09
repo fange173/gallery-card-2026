@@ -31,7 +31,11 @@ class GalleryCard extends LitElement {
     this._hasKeyNavigationListener = false;
     this._keyNavigationHandler = event => this._keyNavigation(event);
     this._mediaResolveCache = new Map();
+    this._mediaResolveInflight = new Map();
+    this._mediaResolveCacheMs = 2.5 * 60 * 60 * 1000;
     this._loadToken = 0;
+    this._pendingLoadRequested = false;
+    this._slideshowTimer = undefined;
   }
 
   render() {
@@ -115,8 +119,8 @@ class GalleryCard extends LitElement {
       }
           </div>
         </div>
-        <div id="imageModal" class="modal" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
-          <img class="modal-content" id="popupImage">
+        <div id="imageModal" class="modal" @click="${this._closeImageModal}" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
+          <img class="modal-content" id="popupImage" @click="${event => event.stopPropagation()}">
           <div id="popupCaption"></div>
         </div>
       </ha-card>
@@ -157,7 +161,10 @@ class GalleryCard extends LitElement {
     const mediaArray = this.shadowRoot.querySelectorAll('img.lzy_img, video.lzy_video');
 
     for (const v of mediaArray) {
+      if (v.dataset.observed) continue;
+
       this.imageObserver.observe(v);
+      v.dataset.observed = "true";
     }
   }
 
@@ -198,6 +205,7 @@ class GalleryCard extends LitElement {
     if (this._hass !== undefined)
       this._loadResources(this._hass);
 
+    this._clearSlideshowTimer();
     this._doSlideShow(true);
   }
 
@@ -211,6 +219,10 @@ class GalleryCard extends LitElement {
   disconnectedCallback() {
     super.disconnectedCallback();
     this._removeKeyNavigationListener();
+    this._clearSlideshowTimer();
+    if (this.imageObserver) {
+      this.imageObserver.disconnect();
+    }
   }
 
   getCardSize() {
@@ -229,14 +241,24 @@ class GalleryCard extends LitElement {
       const time = Number.parseInt(this.config.slideshow_timer);
 
       if (!Number.isNaN(time) && time > 0) {
-        setTimeout(() => { this._doSlideShow(); }, (time * 1000));
+        this._slideshowTimer = setTimeout(() => { this._doSlideShow(); }, (time * 1000));
       }
     }
   }
 
+  _clearSlideshowTimer() {
+    if (!this._slideshowTimer) return;
+
+    clearTimeout(this._slideshowTimer);
+    this._slideshowTimer = undefined;
+  }
+
   _loadMore() {
     const step = this.config.items_per_page || 10;
+    const previousItemsToShow = this._itemsToShow;
+
     this._itemsToShow += step;
+    this._resolveVisiblePendingResources(previousItemsToShow, this._itemsToShow);
   }
 
   _selectResource(index, fromSlideshow) {
@@ -323,10 +345,12 @@ class GalleryCard extends LitElement {
     modal.style.display = "block";
     this._loadImageForPopup();
     modal.scrollIntoView(true);
+  }
 
-    modal.addEventListener('click', function () {
-      modal.style.display = "none";
-    });
+  _closeImageModal() {
+    const modal = this.shadowRoot.querySelector("#imageModal");
+
+    modal.style.display = "none";
   }
 
   _loadImageForPopup() {
@@ -338,7 +362,7 @@ class GalleryCard extends LitElement {
       if (this._currentResource().pendingAuth) return;
 
       modalImg.src = this._currentResource().url;
-      captionText.innerHTML = this._currentResource().caption;
+      captionText.textContent = this._currentResource().caption;
     }
   }
 
@@ -439,7 +463,10 @@ class GalleryCard extends LitElement {
   }
 
   async _loadResources(hass) {
-    if (this._isLoading) return;
+    if (this._isLoading) {
+      this._pendingLoadRequested = true;
+      return;
+    }
     const loadToken = ++this._loadToken;
 
     this._isLoading = true;
@@ -600,6 +627,10 @@ class GalleryCard extends LitElement {
     } finally {
       if (loadToken === this._loadToken) {
         this._isLoading = false;
+        if (this._pendingLoadRequested) {
+          this._pendingLoadRequested = false;
+          this._loadResources(this._hass);
+        }
       }
     }
   }
@@ -794,16 +825,28 @@ class GalleryCard extends LitElement {
   }
 
   _fetchMediaItemWithCache(hass, mediaItemPath) {
-    const cachedUrl = this._mediaResolveCache.get(mediaItemPath);
+    const cached = this._mediaResolveCache.get(mediaItemPath);
 
-    if (cachedUrl) {
-      return Promise.resolve({ url: cachedUrl });
+    if (cached && cached.expiresAt > Date.now()) {
+      return Promise.resolve({ url: cached.url });
     }
 
-    return this._fetchMediaItem(hass, mediaItemPath).then(auth => {
-      this._mediaResolveCache.set(mediaItemPath, auth.url);
+    if (this._mediaResolveInflight.has(mediaItemPath)) {
+      return this._mediaResolveInflight.get(mediaItemPath);
+    }
+
+    const request = this._fetchMediaItem(hass, mediaItemPath).then(auth => {
+      this._mediaResolveCache.set(mediaItemPath, {
+        url: auth.url,
+        expiresAt: Date.now() + this._mediaResolveCacheMs
+      });
       return auth;
+    }).finally(() => {
+      this._mediaResolveInflight.delete(mediaItemPath);
     });
+
+    this._mediaResolveInflight.set(mediaItemPath, request);
+    return request;
   }
 
   _loadCameraResource(entityId, camera) {
@@ -936,6 +979,16 @@ class GalleryCard extends LitElement {
 
       run();
     }, 0);
+  }
+
+  _resolveVisiblePendingResources(startIndex = 0, endIndex = this._itemsToShow) {
+    const visiblePendingResources = (this.resources || [])
+      .slice(startIndex, endIndex)
+      .filter(resource => resource.pendingAuth && resource.mediaContentId);
+
+    for (const resource of visiblePendingResources) {
+      this._resolveResourceUrl(resource);
+    }
   }
 
   _resolveResourceUrl(resource, hass = this._hass, loadToken = this._loadToken, applyUpdate = true) {
@@ -1359,6 +1412,11 @@ class GalleryCard extends LitElement {
           grid-template-columns: repeat(3, 1fr) !important;
           display: grid !important;
         }
+        .nav-text-btn {
+          opacity: 0.82;
+          padding: 6px 10px;
+          font-size: 0.8em;
+        }
       }
 
       /* Modal */
@@ -1409,13 +1467,13 @@ class GalleryCard extends LitElement {
 customElements.define("gallery-card", GalleryCard);
 
 console.groupCollapsed(`%cGALLERY-CARD ${GalleryCardVersion} IS INSTALLED`, "color: green; font-weight: bold");
-console.log("Readme:", "https://github.com/lukelalo/gallery-card");
+console.log("Readme:", "https://github.com/fange173/gallery-card-2026");
 console.groupEnd();
 
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "gallery-card",
-  name: "Gallery Card",
+  name: "Gallery Card 2026",
   preview: false, // Optional - defaults to false
-  description: "The Gallery Card allows for viewing multiple images/videos.  Requires the Files sensor available at https://github.com/TarheelGrad1998" // Optional
+  description: "Gallery Card 2026 displays images and videos from media sources, file-list sensors, and camera entities." // Optional
 });

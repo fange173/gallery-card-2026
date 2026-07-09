@@ -1,49 +1,171 @@
 # Gallery Card 2026
 
-Modern Gallery Card for Home Assistant's UI LoveLace. Displays images and videos in a beautiful gallery style with performance optimizations and date search.
+[English](README.md) | [中文](README.zh-CN.md)
 
-![Screenshot](https://github.com/fange173/gallery-card-2026/raw/master/screenshot.png)
+Home Assistant Lovelace custom card for browsing images and videos from media sources, file-list sensors, and camera entities.
 
-## Features
-- **Modern UI**: Clean design with smooth animations and responsive layout.
-- **Performance**: Lazy loading for large file lists.
-- **Date Search**: Easily find recordings from specific dates.
-- **Auto Fallback**: Automatically find the latest recordings if none exist for today.
+This project is a fork adapted for a more gallery-like layout, date filtering, lazy thumbnails, loading states, and mobile-friendly navigation.
+
+## Preview
+
+![Gallery Card 2026 preview](docs/preview.png)
+
+## Current Features
+
+- Large preview area with thumbnail list on the right, left, top, bottom, hidden, or responsive layout.
+- Supports images, videos, Home Assistant camera entities, `media-source://` paths, and file-list sensor attributes.
+- Loading and empty states for the preview and thumbnail list.
+- Lazy thumbnail loading with first-page media URL resolution prioritized for faster initial display.
+- Date filtering with optional folder/date parsing.
+- Touch swipe, keyboard arrow navigation, and mobile-visible previous/next controls.
+- Optional slideshow and video playback settings.
+- Safe cleanup for keyboard listeners, lazy-load observer, slideshow timer, and temporary media URL cache.
 
 ## Installation
-1. Search for `Gallery Card 2026` in HACS or add this repository as a custom repository.
-2. Add the card to your Lovelace dashboard.
 
-## Configuration Example
-```yaml
-type: custom:gallery-card
-title: Doorbell 
-entities: 
-  - path: media-source://media_source/local 
-    recursive: true 
-menu_alignment: Right  # Options: Right, Left, Bottom, Top, Hidden
-maximum_files: 0       # 0 for unlimited
-items_per_page: 10     # Number of items to show before "Load More"
-file_name_format: "%YYY%m%d%H%M%S" 
-caption_format: "%m/%d %H:%M" 
-show_reload: true 
-enable_date_search: true 
-search_date_folder_format: YYYYMMDD
+Build output is `gallery-card.js` in the project root. Put that file where Home Assistant can serve it, for example:
+
+```text
+/config/www/community/gallery-card/gallery-card.js
 ```
 
-## Options
+Then add the Lovelace resource:
+
+```yaml
+url: /local/community/gallery-card/gallery-card.js
+type: module
+```
+
+Use the card as:
+
+```yaml
+type: custom:gallery-card
+title: Door Lock
+entities:
+  - path: media-source://media_source/local
+    recursive: true
+menu_alignment: right
+items_per_page: 12
+maximum_files: 100
+enable_date_search: true
+search_date_folder_format: YYYYMMDD
+file_name_format: YYYYMMDDHHmmss
+caption_format: MM/DD HH:mm
+```
+
+## Local Development
+
+Install dependencies:
+
+```bash
+npm ci --cache /tmp/gallery-card-2026-npm-cache
+```
+
+Build once:
+
+```bash
+npm run build
+```
+
+Watch source changes:
+
+```bash
+npm run watch
+```
+
+During development, copy the generated root-level `gallery-card.js` to the Home Assistant resource path and hard-refresh the dashboard.
+
+## Configuration
+
+### Required Source
+
+Use either `entity` or `entities`.
+
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| entities | list | **Required** | List of entities or media-source paths. |
-| title | string | Optional | Card title (hidden by default in 2026 version). |
-| menu_alignment | string | Responsive | Layout of the thumbnails. |
-| maximum_files | integer | 0 | Max number of files to retrieve (0 for unlimited). |
-| items_per_page | integer | 10 | Initial number of thumbnails to show. |
-| file_name_format | string | Optional | Format for parsing dates from filenames. |
-| caption_format | string | Optional | Format for displaying captions. |
-| show_reload | boolean | false | Show reload button. |
-| enable_date_search | boolean | false | Enable date filtering. |
-| search_date_folder_format | string | YYYYMMDD | Folder format for date search. |
+| `entity` | string | none | Single source. Converted internally to `entities`. |
+| `entities` | list | none | List of entity ids or media-source objects. |
+
+Entity entries can be strings:
+
+```yaml
+entities:
+  - sensor.front_door_files
+```
+
+Or media-source objects:
+
+```yaml
+entities:
+  - path: media-source://media_source/local/camera
+    recursive: true
+    include_images: true
+    include_video: true
+```
+
+Supported object fields:
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `path` | string | required | Media source path. |
+| `recursive` | boolean | `false` | Browse child directories. |
+| `include_images` | boolean | `true` | Include image media classes. |
+| `include_video` | boolean | `true` | Include video media classes. |
+| `folder_format` | string | card value | Override card-level folder format. |
+| `file_name_format` | string | card value | Override card-level filename date format. |
+| `file_name_date_begins` | number/string | card value | Start position for parsing date from filename. |
+| `caption_format` | string | card value | Override card-level caption format. |
+
+### Layout
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `menu_alignment` | string | `responsive` | `responsive`, `right`, `left`, `bottom`, `top`, or `hidden`. |
+| `items_per_page` | number | `10` | Initial thumbnail count and increment size for "more". |
+
+### Limits And Sorting
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `maximum_files` | number | unlimited | `0` means unlimited. |
+| `maximum_files_per_entity` | boolean | `true` | Apply `maximum_files` per entity instead of globally. |
+| `reverse_sort` | boolean | `true` | Reverse filename/media-title order after sorting. |
+| `random_sort` | boolean | `false` | Shuffle resources after loading. |
+| `parsed_date_sort` | boolean | `false` | Sort by parsed date from `file_name_format`. |
+
+### Date And Caption Parsing
+
+Old strftime-like tokens such as `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` are converted to Day.js-style tokens internally.
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `enable_date_search` | boolean | `false` | Show the date picker and filter by selected date. |
+| `search_date_folder_format` | string | `DD_MM_YYYY` | Folder name format used when recursively filtering date folders. |
+| `folder_format` | string | none | Enables targeted recent-folder searching when used with `maximum_files` and reverse sort. |
+| `file_name_format` | string | none | Date format used to parse filenames. |
+| `file_name_date_begins` | number/string | none | 1-based filename position where date parsing starts. |
+| `caption_format` | string | filename | Day.js format for captions. Use `AGO` for relative time. Use a single space to hide filename captions. |
+
+### Video And Slideshow
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `video_loop` | boolean | `false` | Loop the main video preview. |
+| `video_autoplay` | boolean | `false` | Autoplay the main video preview. |
+| `video_muted` | boolean | `false` | Mute videos after metadata loads. |
+| `video_preload` | boolean | `true` | Preload video metadata in thumbnails. |
+| `preview_video_at` | number | `0.1` | Timestamp used for video thumbnail preview metadata. |
+| `show_duration` | boolean | `true` | Keep video duration handling enabled where duration markup exists. |
+| `slideshow_timer` | number/string | none | Seconds between automatic preview changes. |
+| `slideshow_video_end` | boolean | `false` | Advance slideshow when a video ends. |
+
+## Notes
+
+- `media-source://` items need `resolve_media` URLs. The card resolves the first visible page first, then resolves remaining media in small batches.
+- Temporary media URLs are cached for less than the Home Assistant resolve expiration window.
+- File-list sensors are expected to expose `fileList` or `file_list` attributes.
+- The root `gallery-card.js` file is generated from `src/gallery-card.js`.
 
 ## Credits
-Based on the original [Gallery Card](https://github.com/lukelalo/gallery-card).
+
+Forked from [lukelalo/gallery-card](https://github.com/lukelalo/gallery-card), which is forked from [TarheelGrad1998/gallery-card](https://github.com/TarheelGrad1998/gallery-card). This repository keeps the original MIT license and adapts the card for this project's Home Assistant usage.
