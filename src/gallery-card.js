@@ -14,7 +14,8 @@ class GalleryCard extends LitElement {
       currentResourceIndex: { type: Number },
       selectedDate: { type: Object },
       _itemsToShow: { type: Number },
-      _isDateFiltered: { type: Boolean }
+      _isDateFiltered: { type: Boolean },
+      _isLoading: { type: Boolean }
     };
   }
 
@@ -27,11 +28,16 @@ class GalleryCard extends LitElement {
     this._isDateFiltered = false;
     this._isInitialLoad = false;
     this._isLoading = false;
+    this._hasKeyNavigationListener = false;
+    this._keyNavigationHandler = event => this._keyNavigation(event);
   }
 
   render() {
+    if (!this.config) return html``;
+
     const menuAlignment = (this.config.menu_alignment || "responsive").toLowerCase();
     const resources = this.resources || [];
+    const hasResources = resources.length > 0;
 
     return html`
       ${this.errors === undefined ? html`` :
@@ -41,7 +47,11 @@ class GalleryCard extends LitElement {
       <ha-card class="menu-${menuAlignment}">
         <div class="resource-viewer" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
           <figure style="margin:5px;">
-            ${this._currentResource().isHass ?
+            ${this._isLoading ?
+        this._renderLoadingState("正在加载媒体...") :
+        !hasResources ?
+          this._renderEmptyState("没有可显示的图片或视频") :
+        this._currentResource().isHass ?
         html`
                   <hui-image @click="${event => this._popupCamera(event)}"
                                       .hass=${this._hass}
@@ -53,12 +63,12 @@ class GalleryCard extends LitElement {
           html`<img @click="${event => this._popupImage(event)}" src="${this._currentResource().url}"/>` :
           html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay} src="${this._currentResource().url}#t=0.1" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}" 
                             @ended="${() => this._videoHasEnded()}" preload="metadata" playsinline webkit-playsinline></video>`
-      }
+          }
           </figure>
-          <div class="viewer-nav">
+          ${!this._isLoading && hasResources ? html`<div class="viewer-nav">
             <div class="nav-text-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex - 1)}">上一个</div> 
             <div class="nav-text-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex + 1)}">下一个</div> 
-          </div>
+          </div>` : html``}
         </div>
         <div class="resource-menu-container">
           ${(this.config.enable_date_search ?? false) ? html`
@@ -70,7 +80,7 @@ class GalleryCard extends LitElement {
             </div>
           ` : html``}
           <div class="resource-menu">
-            ${resources.slice(0, this._itemsToShow).map((resource, index) => {
+            ${this._isLoading ? this._renderMenuLoadingState() : !hasResources ? html`<div class="menu-empty">暂无媒体</div>` : resources.slice(0, this._itemsToShow).map((resource, index) => {
         return html`
                     <figure style="margin:5px;" id="resource${index}" data-imageIndex="${index}" @click="${() => this._selectResource(index)}" class="${(index === this.currentResourceIndex) ? 'selected' : ''}">
                     ${resource.isHass ?
@@ -103,6 +113,35 @@ class GalleryCard extends LitElement {
         </div>
       </ha-card>
     `;
+  }
+
+  _renderLoadingState(label) {
+    return html`
+      <div class="loading-state">
+        <div class="loading-spinner"></div>
+        <div class="loading-label">${label}</div>
+      </div>
+    `;
+  }
+
+  _renderEmptyState(label) {
+    return html`
+      <div class="empty-state">
+        <ha-icon icon="mdi:image-off-outline"></ha-icon>
+        <div class="empty-label">${label}</div>
+      </div>
+    `;
+  }
+
+  _renderMenuLoadingState() {
+    const count = Math.min(this._itemsToShow || 10, 10);
+
+    return Array.from({ length: count }, () => html`
+      <figure class="resource-skeleton" aria-hidden="true">
+        <div class="skeleton-media"></div>
+        <div class="skeleton-caption"></div>
+      </figure>
+    `);
   }
 
   // eslint-disable-next-line no-unused-vars
@@ -157,8 +196,13 @@ class GalleryCard extends LitElement {
   set hass(hass) {
     this._hass = hass;
 
-    if (this.resources === undefined)
+    if (this.config && this.resources === undefined)
       this._loadResources(this._hass);
+  }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    this._removeKeyNavigationListener();
   }
 
   getCardSize() {
@@ -528,9 +572,7 @@ class GalleryCard extends LitElement {
       }
 
       this.currentResourceIndex = 0;
-      if (!(this.parentNode && this.parentNode.tagName && this.parentNode.tagName.toLowerCase() === "hui-card-preview")) {
-        document.addEventListener("keydown", event => this._keyNavigation(event));
-      }
+      this._addKeyNavigationListener();
 
       this.errors = [];
       for (const error of resources.filter(result => result.error).flat(Number.POSITIVE_INFINITY)) {
@@ -542,6 +584,22 @@ class GalleryCard extends LitElement {
     } finally {
       this._isLoading = false;
     }
+  }
+
+  _addKeyNavigationListener() {
+    if (this._hasKeyNavigationListener || (this.parentNode && this.parentNode.tagName && this.parentNode.tagName.toLowerCase() === "hui-card-preview")) {
+      return;
+    }
+
+    document.addEventListener("keydown", this._keyNavigationHandler);
+    this._hasKeyNavigationListener = true;
+  }
+
+  _removeKeyNavigationListener() {
+    if (!this._hasKeyNavigationListener) return;
+
+    document.removeEventListener("keydown", this._keyNavigationHandler);
+    this._hasKeyNavigationListener = false;
   }
 
   _loadMediaResource(hass, contentId, maximumFiles, folderFormat, fileNameFormat, fileNameDateBegins, captionFormat, recursive, reverseSort, includeVideo, includeImages, filterForDate) {
@@ -778,7 +836,6 @@ class GalleryCard extends LitElement {
 
       if (fileNameDateBegins && !Number.isNaN(Number.parseInt(fileNameDateBegins)))
         fileDatePart = fileDatePart.slice(Math.max(0, Number.parseInt(fileNameDateBegins) - 1));
-      console.log(fileDatePart);
       if (fileNameFormat)
         date = dayjs(fileDatePart, fileNameFormat);
 
@@ -861,6 +918,8 @@ class GalleryCard extends LitElement {
       .resource-viewer figure {
         width: 100%;
         height: 100%;
+        margin: 0 !important;
+        box-sizing: border-box;
       }
       img, video {
         width: 100%;
@@ -868,6 +927,37 @@ class GalleryCard extends LitElement {
         object-fit: contain;
         display: block;
         transition: opacity 0.3s ease;
+      }
+      .loading-state,
+      .empty-state {
+        width: 100%;
+        height: 100%;
+        min-height: 160px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        color: rgba(255, 255, 255, 0.82);
+        text-align: center;
+        box-sizing: border-box;
+      }
+      .loading-spinner {
+        width: 36px;
+        height: 36px;
+        border: 3px solid rgba(255, 255, 255, 0.24);
+        border-top-color: var(--gallery-card-primary-color);
+        border-radius: 50%;
+        animation: gallery-card-spin 0.8s linear infinite;
+      }
+      .loading-label,
+      .empty-label {
+        font-size: 0.95em;
+        font-weight: 500;
+      }
+      .empty-state ha-icon {
+        --mdc-icon-size: 42px;
+        opacity: 0.75;
       }
       .resource-menu-container {
         display: flex;
@@ -1025,6 +1115,38 @@ class GalleryCard extends LitElement {
         outline-offset: 2px;
         box-shadow: 0 0 0 4px rgba(var(--rgb-primary-color, 3, 169, 244), 0.2);
       }
+      .resource-skeleton {
+        cursor: default !important;
+        box-shadow: none !important;
+        pointer-events: none;
+      }
+      .resource-skeleton:hover {
+        transform: none;
+        box-shadow: none;
+      }
+      .skeleton-media {
+        width: 100%;
+        height: 100%;
+        background: linear-gradient(90deg, #242424 0%, #363636 45%, #242424 90%);
+        background-size: 220% 100%;
+        animation: gallery-card-shimmer 1.2s ease-in-out infinite;
+      }
+      .skeleton-caption {
+        position: absolute;
+        left: 10px;
+        right: 10px;
+        bottom: 8px;
+        height: 8px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.3);
+      }
+      .menu-empty {
+        grid-column: 1 / -1;
+        padding: 20px 8px;
+        color: var(--secondary-text-color, #727272);
+        text-align: center;
+        font-size: 0.9em;
+      }
       .resource-menu img, .resource-menu video {
         width: 100%;
         height: 100%;
@@ -1157,6 +1279,13 @@ class GalleryCard extends LitElement {
       @keyframes zoom {
         from {transform: translate(-50%, -50%) scale(0.8); opacity: 0;}
         to {transform: translate(-50%, -50%) scale(1); opacity: 1;}
+      }
+      @keyframes gallery-card-spin {
+        to { transform: rotate(360deg); }
+      }
+      @keyframes gallery-card-shimmer {
+        0% { background-position: 100% 0; }
+        100% { background-position: -100% 0; }
       }
     `;
   }
