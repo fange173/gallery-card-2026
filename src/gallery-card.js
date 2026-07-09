@@ -30,6 +30,8 @@ class GalleryCard extends LitElement {
     this._isLoading = false;
     this._hasKeyNavigationListener = false;
     this._keyNavigationHandler = event => this._keyNavigation(event);
+    this._mediaResolveCache = new Map();
+    this._loadToken = 0;
   }
 
   render() {
@@ -51,6 +53,8 @@ class GalleryCard extends LitElement {
         this._renderLoadingState("正在加载媒体...") :
         !hasResources ?
           this._renderEmptyState("没有可显示的图片或视频") :
+        this._currentResource().pendingAuth ?
+          this._renderLoadingState("正在加载预览...") :
         this._currentResource().isHass ?
         html`
                   <hui-image @click="${event => this._popupCamera(event)}"
@@ -83,7 +87,11 @@ class GalleryCard extends LitElement {
             ${this._isLoading ? this._renderMenuLoadingState() : !hasResources ? html`<div class="menu-empty">暂无媒体</div>` : resources.slice(0, this._itemsToShow).map((resource, index) => {
         return html`
                     <figure style="margin:5px;" id="resource${index}" data-imageIndex="${index}" @click="${() => this._selectResource(index)}" class="${(index === this.currentResourceIndex) ? 'selected' : ''}">
-                    ${resource.isHass ?
+                    ${resource.pendingAuth ?
+            html`<div class="thumbnail-loading">
+                            <div class="skeleton-media"></div>
+                          </div>` :
+          resource.isHass ?
             html`
                           <hui-image
                             .hass=${this._hass}
@@ -234,6 +242,8 @@ class GalleryCard extends LitElement {
   _selectResource(index, fromSlideshow) {
     this.autoPlayVideo = true;
 
+    if (!this.resources || this.resources.length === 0) return;
+
     let nextResourceIndex = index;
 
     if (index < 0)
@@ -247,6 +257,7 @@ class GalleryCard extends LitElement {
     }
 
     this.currentResourceIndex = nextResourceIndex;
+    this._resolveResourceUrl(this.resources[this.currentResourceIndex]);
     this._loadImageForPopup();
 
     if (fromSlideshow && this.parentNode && this.parentNode.tagName && this.parentNode.tagName.toLowerCase() === "hui-card-preview") {
@@ -324,6 +335,8 @@ class GalleryCard extends LitElement {
     const captionText = this.shadowRoot.querySelector("#popupCaption");
 
     if (modal.style.display === "block") {
+      if (this._currentResource().pendingAuth) return;
+
       modalImg.src = this._currentResource().url;
       captionText.innerHTML = this._currentResource().caption;
     }
@@ -427,6 +440,8 @@ class GalleryCard extends LitElement {
 
   async _loadResources(hass) {
     if (this._isLoading) return;
+    const loadToken = ++this._loadToken;
+
     this._isLoading = true;
 
     this.currentResourceIndex = undefined;
@@ -572,6 +587,7 @@ class GalleryCard extends LitElement {
       }
 
       this.currentResourceIndex = 0;
+      this._resolvePendingResources(hass, loadToken);
       this._addKeyNavigationListener();
 
       this.errors = [];
@@ -582,7 +598,9 @@ class GalleryCard extends LitElement {
         });
       }
     } finally {
-      this._isLoading = false;
+      if (loadToken === this._loadToken) {
+        this._isLoading = false;
+      }
     }
   }
 
@@ -653,7 +671,9 @@ class GalleryCard extends LitElement {
         const resources = [];
 
         for (const mediaItem of values) {
-          const resource = this._createFileResource(mediaItem.authenticated_path, fileNameFormat, fileNameDateBegins, captionFormat);
+          const resource = mediaItem.pending_authentication ?
+            this._createPendingMediaResource(mediaItem, fileNameFormat, fileNameDateBegins, captionFormat) :
+            this._createFileResource(mediaItem.authenticated_path, fileNameFormat, fileNameDateBegins, captionFormat);
 
           if (resource !== undefined) {
             resources.push(resource);
@@ -672,7 +692,7 @@ class GalleryCard extends LitElement {
     });
   }
 
-  _loadMedia(reference, hass, contentId, maximumFiles, recursive, reverseSort, includeVideo, includeImages, filterForDate) {
+  async _loadMedia(reference, hass, contentId, maximumFiles, recursive, reverseSort, includeVideo, includeImages, filterForDate) {
     const mediaItem = {
       media_class: "directory",
       media_content_id: contentId
@@ -682,39 +702,45 @@ class GalleryCard extends LitElement {
       mediaItem.media_content_id += "/";
     }
 
-    return Promise.all(this._fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate))
-      .then(function (values) {
-        const mediaItems = values
-          .flat(Number.POSITIVE_INFINITY)
-          .filter(function (item) { return item !== undefined; })
-          .sort(
-            function (a, b) {
-              if (a.title > b.title) {
-                return 1;
-              }
-              if (a.title < b.title) {
-                return -1;
-              }
-              return 0;
-            });
+    const values = await Promise.all(this._fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate));
+    const mediaItems = values
+      .flat(Number.POSITIVE_INFINITY)
+      .filter(function (item) { return item !== undefined; })
+      .sort(
+        function (a, b) {
+          if (a.title > b.title) {
+            return 1;
+          }
+          if (a.title < b.title) {
+            return -1;
+          }
+          return 0;
+        });
 
-        if (reverseSort)
-          mediaItems.reverse();
+    if (reverseSort)
+      mediaItems.reverse();
 
-        if (maximumFiles !== undefined && !Number.isNaN(maximumFiles) && maximumFiles < mediaItems.length) {
-          mediaItems.length = maximumFiles;
-        }
+    if (maximumFiles !== undefined && !Number.isNaN(maximumFiles) && maximumFiles < mediaItems.length) {
+      mediaItems.length = maximumFiles;
+    }
 
-        return Promise.all(mediaItems.map(function (mediaItem) {
-          return reference._fetchMediaItem(hass, mediaItem.media_content_id)
-            .then(function (auth) {
-              return {
-                ...mediaItem,
-                authenticated_path: auth.url
-              };
-            });
-        }));
-      });
+    const priorityCount = Math.min(reference._itemsToShow || 10, mediaItems.length);
+    const priorityItems = mediaItems.slice(0, priorityCount);
+    const deferredItems = mediaItems.slice(priorityCount).map(item => ({
+      ...item,
+      pending_authentication: true
+    }));
+    const resolvedItems = await Promise.all(priorityItems.map(mediaItem => {
+      return reference._fetchMediaItemWithCache(hass, mediaItem.media_content_id)
+        .then(function (auth) {
+          return {
+            ...mediaItem,
+            authenticated_path: auth.url
+          };
+        });
+    }));
+
+    return resolvedItems.concat(deferredItems);
   }
 
   _fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate) {
@@ -764,6 +790,19 @@ class GalleryCard extends LitElement {
       type: "media_source/resolve_media",
       media_content_id: mediaItemPath,
       expires: (60 * 60 * 3)  // 3 hours
+    });
+  }
+
+  _fetchMediaItemWithCache(hass, mediaItemPath) {
+    const cachedUrl = this._mediaResolveCache.get(mediaItemPath);
+
+    if (cachedUrl) {
+      return Promise.resolve({ url: cachedUrl });
+    }
+
+    return this._fetchMediaItem(hass, mediaItemPath).then(auth => {
+      this._mediaResolveCache.set(mediaItemPath, auth.url);
+      return auth;
     });
   }
 
@@ -860,6 +899,83 @@ class GalleryCard extends LitElement {
     }
 
     return resource;
+  }
+
+  _createPendingMediaResource(mediaItem, fileNameFormat, fileNameDateBegins, captionFormat) {
+    const resource = this._createFileResource(mediaItem.title || mediaItem.media_content_id, fileNameFormat, fileNameDateBegins, captionFormat);
+
+    if (!resource) return undefined;
+
+    return {
+      ...resource,
+      url: "",
+      mediaContentId: mediaItem.media_content_id,
+      pendingAuth: true
+    };
+  }
+
+  _resolvePendingResources(hass, loadToken) {
+    setTimeout(() => {
+      const pendingResources = (this.resources || []).filter(resource => resource.pendingAuth && resource.mediaContentId);
+      const concurrency = 4;
+      let nextIndex = 0;
+
+      const run = async () => {
+        while (nextIndex < pendingResources.length && loadToken === this._loadToken) {
+          const batch = pendingResources.slice(nextIndex, nextIndex + concurrency);
+
+          nextIndex += concurrency;
+
+          const resolvedItems = await Promise.all(batch.map(resource => {
+            return this._resolveResourceUrl(resource, hass, loadToken, false);
+          }));
+
+          this._applyResolvedResourceUrls(resolvedItems.filter(Boolean), loadToken);
+        }
+      };
+
+      run();
+    }, 0);
+  }
+
+  _resolveResourceUrl(resource, hass = this._hass, loadToken = this._loadToken, applyUpdate = true) {
+    if (!resource || !resource.pendingAuth || !resource.mediaContentId) return Promise.resolve();
+
+    return this._fetchMediaItemWithCache(hass, resource.mediaContentId).then(auth => {
+      const resolvedItem = {
+        mediaContentId: resource.mediaContentId,
+        url: auth.url
+      };
+
+      if (applyUpdate) {
+        this._applyResolvedResourceUrls([resolvedItem], loadToken);
+      }
+
+      return resolvedItem;
+    }).catch(error => {
+      console.log(error);
+      return undefined;
+    });
+  }
+
+  _applyResolvedResourceUrls(resolvedItems, loadToken) {
+    if (loadToken !== this._loadToken || resolvedItems.length === 0) return;
+
+    const resolvedUrlById = new Map(resolvedItems.map(item => [item.mediaContentId, item.url]));
+
+    this.resources = (this.resources || []).map(item => {
+      const url = resolvedUrlById.get(item.mediaContentId);
+
+      if (!url) return item;
+
+      return {
+        ...item,
+        url,
+        pendingAuth: false
+      };
+    });
+
+    this._loadImageForPopup();
   }
 
   _folderDateFormatter(folderFormat, date) {
