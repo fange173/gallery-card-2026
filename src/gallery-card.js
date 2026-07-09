@@ -1056,6 +1056,7 @@ class GalleryCard extends LitElement {
         max-height: 100%;
         display: flex;
         flex-direction: column;
+        overflow: hidden;
         background: var(--gallery-card-bg-color);
         border-radius: var(--ha-card-border-radius, 12px);
         box-shadow: var(--ha-card-box-shadow, 0 2px 2px 0 rgba(0,0,0,0.14), 0 1px 5px 0 rgba(0,0,0,0.12), 0 3px 1px -2px rgba(0,0,0,0.2));
@@ -1133,6 +1134,7 @@ class GalleryCard extends LitElement {
         flex-direction: column;
         background: var(--secondary-background-color, #f5f5f5);
         overflow-y: auto;
+        min-height: 0;
       }
       .card-header-actions {
         display: grid;
@@ -1256,6 +1258,7 @@ class GalleryCard extends LitElement {
         gap: 12px;
         overflow-y: auto;
         align-content: flex-start;
+        min-height: 0;
       }
       .resource-menu::-webkit-scrollbar {
         width: 4px;
@@ -1357,6 +1360,12 @@ class GalleryCard extends LitElement {
         flex-direction: column;
       }
       @media all and (min-width: 600px) {
+        .menu-responsive,
+        .menu-right,
+        .menu-left {
+          height: calc(100dvh - var(--header-height, 56px));
+          max-height: calc(100dvh - var(--header-height, 56px));
+        }
         .menu-responsive {
           flex-direction: row;
         }
@@ -1365,9 +1374,11 @@ class GalleryCard extends LitElement {
         }
         .menu-responsive .resource-menu-container {
           flex: 1;
-          max-height: none;
+          height: 100%;
+          max-height: 100%;
         }
         .menu-responsive .resource-menu {
+          flex: 1;
           grid-template-columns: 1fr;
         }
       }
@@ -1384,11 +1395,11 @@ class GalleryCard extends LitElement {
         min-width: 120px;
       }
       .menu-right { flex-direction: row; }
-      .menu-right .resource-menu-container { width: 25%; max-height: none; }
-      .menu-right .resource-menu { grid-template-columns: 1fr; }
+      .menu-right .resource-menu-container { width: 25%; height: 100%; max-height: 100%; }
+      .menu-right .resource-menu { flex: 1; grid-template-columns: 1fr; }
       .menu-left { flex-direction: row-reverse; }
-      .menu-left .resource-menu-container { width: 25%; max-height: none; }
-      .menu-left .resource-menu { grid-template-columns: 1fr; }
+      .menu-left .resource-menu-container { width: 25%; height: 100%; max-height: 100%; }
+      .menu-left .resource-menu { flex: 1; grid-template-columns: 1fr; }
       .menu-top { flex-direction: column-reverse; }
       .menu-top .resource-menu { display: flex; overflow-x: auto; overflow-y: hidden; }
       .menu-top .resource-menu figure { min-width: 120px; }
