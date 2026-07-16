@@ -4,6 +4,10 @@ import customParseFormat from "dayjs/plugin/customParseFormat";
 import relativeTime from "dayjs/plugin/relativeTime";
 
 const GalleryCardVersion = "2026.0.1";
+const ValidMenuAlignments = new Set(["responsive", "right", "left", "bottom", "top", "hidden"]);
+
+dayjs.extend(customParseFormat);
+dayjs.extend(relativeTime);
 
 class GalleryCard extends LitElement {
   static get properties() {
@@ -15,7 +19,9 @@ class GalleryCard extends LitElement {
       selectedDate: { type: Object },
       _itemsToShow: { type: Number },
       _isDateFiltered: { type: Boolean },
-      _isLoading: { type: Boolean }
+      _isLoading: { type: Boolean },
+      _previewErrorIndex: { type: Number },
+      errors: { type: Array }
     };
   }
 
@@ -28,6 +34,8 @@ class GalleryCard extends LitElement {
     this._isDateFiltered = false;
     this._isInitialLoad = false;
     this._isLoading = false;
+    this._previewErrorIndex = undefined;
+    this.errors = [];
     this._hasKeyNavigationListener = false;
     this._keyNavigationHandler = event => this._keyNavigation(event);
     this._mediaResolveCache = new Map();
@@ -44,56 +52,79 @@ class GalleryCard extends LitElement {
     const menuAlignment = (this.config.menu_alignment || "responsive").toLowerCase();
     const resources = this.resources || [];
     const hasResources = resources.length > 0;
+    const hasErrors = this.errors.length > 0;
+    const showToolbar = Boolean(this.config.title || this.config.enable_date_search || this.config.show_reload || hasErrors);
+    const currentResource = hasResources ? this._currentResource() : undefined;
+    const previewHasError = currentResource && (currentResource.resolveError || this._previewErrorIndex === this.currentResourceIndex);
+    const errorHint = this.config.show_reload ? "媒体加载失败，请点击刷新后重试" : "媒体加载失败，请检查媒体来源";
 
     return html`
-      ${this.errors === undefined ? html`` :
-        this.errors.map((error) => {
-          return html`<hui-warning>${error}</hui-warning>`;
-        })}
       <ha-card class="menu-${menuAlignment}">
         <div class="resource-viewer" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
-          <figure style="margin:5px;">
+          <figure>
             ${this._isLoading ?
         this._renderLoadingState("正在加载媒体...") :
         !hasResources ?
-          this._renderEmptyState("没有可显示的图片或视频") :
-        this._currentResource().pendingAuth ?
+          this._renderEmptyState(hasErrors ? errorHint : "没有可显示的图片或视频") :
+        previewHasError ?
+          this._renderErrorState(errorHint) :
+        currentResource.pendingAuth ?
           this._renderLoadingState("正在加载预览...") :
-        this._currentResource().isHass ?
+        currentResource.isHass ?
         html`
                   <hui-image @click="${event => this._popupCamera(event)}"
                                       .hass=${this._hass}
-                                      .cameraImage=${this._currentResource().name}
+                                      .cameraImage=${currentResource.name}
                                       .cameraView=${"live"}
                                     ></hui-image>
                 ` :
-        this._isImageExtension(this._currentResource().extension) ?
-          html`<img @click="${event => this._popupImage(event)}" src="${this._currentResource().url}"/>` :
-          html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay} src="${this._currentResource().url}#t=0.1" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}" 
+        this._isImageExtension(currentResource.extension) ?
+          html`<img @click="${event => this._popupImage(event)}" @error="${() => this._handlePreviewError()}" src="${currentResource.url}" alt="${currentResource.caption || currentResource.name}"/>` :
+          html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay} ?muted=${this.config.video_muted} src="${currentResource.url}#t=0.1" @error="${() => this._handlePreviewError()}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}" 
                             @ended="${() => this._videoHasEnded()}" preload="metadata" playsinline webkit-playsinline></video>`
           }
           </figure>
           ${!this._isLoading && hasResources ? html`<div class="viewer-nav">
-            <div class="nav-text-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex - 1)}">上一个</div> 
-            <div class="nav-text-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex + 1)}">下一个</div> 
+            <button type="button" class="nav-icon-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex - 1)}" aria-label="上一个" title="上一个">
+              <ha-icon icon="mdi:chevron-left"></ha-icon>
+            </button>
+            <button type="button" class="nav-icon-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex + 1)}" aria-label="下一个" title="下一个">
+              <ha-icon icon="mdi:chevron-right"></ha-icon>
+            </button>
           </div>` : html``}
         </div>
         <div class="resource-menu-container">
-          ${(this.config.enable_date_search ?? false) ? html`
+          ${showToolbar ? html`
             <div class="card-header-actions">
-              <div class="date-filter-container">
-                <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
+              <div class="header-leading">
+                ${this.config.title ? html`<div class="card-title" title="${this.config.title}">${this.config.title}</div>` : html``}
               </div>
-              <span class="action-text btn-clear-date" @click="${this._clearDateFilter}" style="visibility: ${this._isDateFiltered ? 'visible' : 'hidden'};">清除</span>
+              ${this.config.enable_date_search ? html`<div class="date-filter-container">
+                <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
+              </div>` : html``}
+              <div class="header-trailing">
+                ${this.config.enable_date_search ? html`<button type="button" class="action-text btn-clear-date" @click="${this._clearDateFilter}" style="visibility: ${this._isDateFiltered ? 'visible' : 'hidden'};">清除</button>` : html``}
+                ${this.config.show_reload ? html`<button type="button" class="icon-button btn-reload" @click="${this._reloadResources}" ?disabled=${this._isLoading} aria-label="刷新媒体" title="刷新媒体">
+                  <ha-icon icon="mdi:refresh"></ha-icon>
+                </button>` : html``}
+              </div>
             </div>
           ` : html``}
+          ${hasErrors ? html`<div class="error-list" role="status">
+            ${this.errors.map(error => html`<hui-warning>${error}</hui-warning>`)}
+          </div>` : html``}
           <div class="resource-menu">
             ${this._isLoading ? this._renderMenuLoadingState() : !hasResources ? html`<div class="menu-empty">暂无媒体</div>` : resources.slice(0, this._itemsToShow).map((resource, index) => {
         return html`
-                    <figure style="margin:5px;" id="resource${index}" data-imageIndex="${index}" @click="${() => this._selectResource(index)}" class="${(index === this.currentResourceIndex) ? 'selected' : ''}">
+                    <figure id="resource${index}" data-imageIndex="${index}" @click="${() => this._selectResource(index)}" @keydown="${event => this._handleResourceKeydown(event, index)}" class="${(index === this.currentResourceIndex) ? 'selected' : ''}" tabindex="0" role="button" aria-label="${resource.caption || resource.name || `媒体 ${index + 1}`}">
                     ${resource.pendingAuth ?
             html`<div class="thumbnail-loading">
                             <div class="skeleton-media"></div>
+                          </div>` :
+          resource.resolveError ?
+            html`<div class="thumbnail-error">
+                            <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
+                            <span>加载失败</span>
                           </div>` :
           resource.isHass ?
             html`
@@ -104,23 +135,24 @@ class GalleryCard extends LitElement {
                           ></hui-image>
                         ` :
             this._isImageExtension(resource.extension) ?
-              html`<img class="lzy_img" src="/local/community/gallery-card/placeholder.jpg" data-src="${resource.url}"/>` :
+              html`<img class="lzy_img" data-src="${resource.url}" @load="${event => this._handleThumbnailLoad(event)}" @error="${event => this._handleThumbnailError(event)}" alt="${resource.caption || resource.name}" decoding="async"/>` :
               (this.config.video_preload ?? true) ?
-                html`<video class="lzy_video" preload="metadata" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}"></video>` :
-                html`<div style="text-align: center"><div class="lzy_img"><ha-icon id="play" icon="mdi:movie-play-outline"></ha-icon></div></div>`
+                html`<video class="lzy_video" preload="metadata" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at}" @error="${event => this._handleThumbnailError(event)}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" muted playsinline></video>` :
+                html`<div class="video-placeholder"><ha-icon class="play-icon" icon="mdi:movie-play-outline"></ha-icon></div>`
           }
                     <figcaption>${resource.caption}</figcaption>
                     </figure>
                   `;
       })}
             ${this._itemsToShow < resources.length ?
-        html`<div class="load-more" @click="${this._loadMore}">更多 (${resources.length - this._itemsToShow})</div>` :
+        html`<button type="button" class="load-more" @click="${this._loadMore}">更多 (${resources.length - this._itemsToShow})</button>` :
         html``
       }
           </div>
         </div>
         <div id="imageModal" class="modal" @click="${this._closeImageModal}" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
-          <img class="modal-content" id="popupImage" @click="${event => event.stopPropagation()}">
+          <button type="button" class="modal-close" @click="${this._closeImageModal}" aria-label="关闭预览" title="关闭预览"><ha-icon icon="mdi:close"></ha-icon></button>
+          <img class="modal-content" id="popupImage" @click="${event => event.stopPropagation()}" alt="">
           <div id="popupCaption"></div>
         </div>
       </ha-card>
@@ -129,7 +161,7 @@ class GalleryCard extends LitElement {
 
   _renderLoadingState(label) {
     return html`
-      <div class="loading-state">
+      <div class="loading-state" role="status" aria-live="polite">
         <div class="loading-spinner"></div>
         <div class="loading-label">${label}</div>
       </div>
@@ -140,6 +172,15 @@ class GalleryCard extends LitElement {
     return html`
       <div class="empty-state">
         <ha-icon icon="mdi:image-off-outline"></ha-icon>
+        <div class="empty-label">${label}</div>
+      </div>
+    `;
+  }
+
+  _renderErrorState(label) {
+    return html`
+      <div class="empty-state error-state" role="alert">
+        <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
         <div class="empty-label">${label}</div>
       </div>
     `;
@@ -156,21 +197,26 @@ class GalleryCard extends LitElement {
     `);
   }
 
-  // eslint-disable-next-line no-unused-vars
-  updated(changedProperties) {
+  connectedCallback() {
+    super.connectedCallback();
+    this._createImageObserver();
+    this.requestUpdate();
+  }
+
+  updated() {
+    this._createImageObserver();
     const mediaArray = this.shadowRoot.querySelectorAll('img.lzy_img, video.lzy_video');
 
     for (const v of mediaArray) {
-      if (v.dataset.observed) continue;
-
-      this.imageObserver.observe(v);
-      v.dataset.observed = "true";
+      if (v.dataset.src) {
+        v.closest("figure")?.classList.remove("media-load-error");
+        this.imageObserver.observe(v);
+      }
     }
   }
 
-  setConfig(config) {
-    dayjs.extend(customParseFormat);
-    dayjs.extend(relativeTime);
+  _createImageObserver() {
+    if (this.imageObserver) return;
 
     this.imageObserver = new IntersectionObserver((entries) => {
       for (const entry of entries) {
@@ -184,23 +230,37 @@ class GalleryCard extends LitElement {
             }
             delete lazyMedia.dataset.src;
           }
+          this.imageObserver.unobserve(lazyMedia);
         }
       }
     });
-    if (!config.entity && !config.entities) {
+  }
+
+  setConfig(config) {
+    if (!config || (!config.entity && !config.entities)) {
       throw new Error("Required configuration for entities is missing");
     }
 
-    this.config = config;
-    this._itemsToShow = this.config.items_per_page || 10;
+    const configuredEntities = Array.isArray(config.entities) ? config.entities : (config.entities ? [config.entities] : []);
+    const entities = configuredEntities.map(entity => typeof entity === "object" ? { ...entity } : entity);
 
-    if (this.config.entity) {
-      if (!this.config.entities) {
-        this.config = { ...this.config, entities: [] };
-      }
-      this.config.entities.push(this.config.entity);
-      delete this.config.entity;
-    }
+    if (config.entity) entities.push(config.entity);
+    if (entities.length === 0) throw new Error("At least one entity or media source is required");
+
+    const menuAlignment = String(config.menu_alignment || "responsive").toLowerCase();
+    const itemsPerPage = Number.parseInt(config.items_per_page);
+    const configWithoutEntity = { ...config };
+
+    delete configWithoutEntity.entity;
+
+    this.config = {
+      ...configWithoutEntity,
+      entities,
+      menu_alignment: ValidMenuAlignments.has(menuAlignment) ? menuAlignment : "responsive",
+      items_per_page: Number.isFinite(itemsPerPage) && itemsPerPage > 0 ? itemsPerPage : 10
+    };
+    this._itemsToShow = this.config.items_per_page;
+    this._previewErrorIndex = undefined;
 
     if (this._hass !== undefined)
       this._loadResources(this._hass);
@@ -230,10 +290,12 @@ class GalleryCard extends LitElement {
   }
 
   _isImageExtension(extension) {
-    return (extension.match(/(jpeg|jpg|gif|png|tiff|bmp)$/));
+    return typeof extension === "string" && /\.(?:jpeg|jpg|gif|png|tiff|bmp|webp|avif)$/i.test(`.${extension}`);
   }
 
   _doSlideShow(firstTime) {
+    this._clearSlideshowTimer();
+
     if (!firstTime)
       this._selectResource(this.currentResourceIndex + 1, true);
 
@@ -254,10 +316,10 @@ class GalleryCard extends LitElement {
   }
 
   _loadMore() {
-    const step = this.config.items_per_page || 10;
+    const step = this.config.items_per_page;
     const previousItemsToShow = this._itemsToShow;
 
-    this._itemsToShow += step;
+    this._itemsToShow = Math.min(this._itemsToShow + step, this.resources.length);
     this._resolveVisiblePendingResources(previousItemsToShow, this._itemsToShow);
   }
 
@@ -266,19 +328,30 @@ class GalleryCard extends LitElement {
 
     if (!this.resources || this.resources.length === 0) return;
 
-    let nextResourceIndex = index;
+    let nextResourceIndex = Number.isFinite(index) ? index : 0;
 
-    if (index < 0)
+    if (nextResourceIndex < 0)
       nextResourceIndex = this.resources.length - 1;
-    else if (index >= this.resources.length)
+    else if (nextResourceIndex >= this.resources.length)
       nextResourceIndex = 0;
 
     // 如果选中的索引超出了当前显示范围，自动加载更多
     if (nextResourceIndex >= this._itemsToShow) {
-      this._itemsToShow = nextResourceIndex + 10;
+      this._itemsToShow = Math.min(nextResourceIndex + this.config.items_per_page, this.resources.length);
     }
 
     this.currentResourceIndex = nextResourceIndex;
+    this._previewErrorIndex = undefined;
+    const selectedResource = this.resources[this.currentResourceIndex];
+
+    if (selectedResource.resolveError && selectedResource.mediaContentId) {
+      this._mediaResolveCache.delete(selectedResource.mediaContentId);
+      this.resources = this.resources.map((item, itemIndex) => itemIndex === this.currentResourceIndex ? {
+        ...item,
+        pendingAuth: true,
+        resolveError: false
+      } : item);
+    }
     this._resolveResourceUrl(this.resources[this.currentResourceIndex]);
     this._loadImageForPopup();
 
@@ -307,24 +380,29 @@ class GalleryCard extends LitElement {
   }
 
   _startVideo(event) {
-    if (this.autoPlayVideo)
-      event.target.play();
+    if (this.autoPlayVideo) {
+      const playRequest = event.target.play();
+
+      if (playRequest) playRequest.catch(() => {});
+    }
   }
 
   _videoMetadataLoaded(event) {
+    event.target.closest("figure")?.classList.remove("media-load-error");
     const showDuration = this.config.show_duration ?? true;
     const durationElement = event.target.closest('figure')?.querySelector(".duration");
 
     if (!Number.isNaN(Number.parseInt(event.target.duration)) && showDuration && durationElement) {
-      durationElement.innerHTML = "[" + this._getFormattedVideoDuration(event.target.duration) + "]";
+      durationElement.textContent = "[" + this._getFormattedVideoDuration(event.target.duration) + "]";
     }
 
     if (this.config.video_muted)
-      event.target.muted = "muted";
+      event.target.muted = true;
   }
 
   _videoHasEnded() {
     if (this.config.slideshow_video_end) {
+      this._clearSlideshowTimer();
       this._doSlideShow();
     }
   }
@@ -344,13 +422,51 @@ class GalleryCard extends LitElement {
 
     modal.style.display = "block";
     this._loadImageForPopup();
-    modal.scrollIntoView(true);
   }
 
   _closeImageModal() {
     const modal = this.shadowRoot.querySelector("#imageModal");
 
     modal.style.display = "none";
+  }
+
+  _reloadResources() {
+    this._mediaResolveCache.clear();
+    this._previewErrorIndex = undefined;
+    this._loadResources(this._hass);
+  }
+
+  _handlePreviewError() {
+    const resource = this._currentResource();
+
+    if (resource.mediaContentId && !resource.resolveRetried) {
+      this._mediaResolveCache.delete(resource.mediaContentId);
+      this.resources = this.resources.map((item, index) => index === this.currentResourceIndex ? {
+        ...item,
+        pendingAuth: true,
+        resolveError: false,
+        resolveRetried: true
+      } : item);
+      this._resolveResourceUrl(this.resources[this.currentResourceIndex]);
+      return;
+    }
+
+    this._previewErrorIndex = this.currentResourceIndex;
+  }
+
+  _handleThumbnailError(event) {
+    event.currentTarget.closest("figure")?.classList.add("media-load-error");
+  }
+
+  _handleThumbnailLoad(event) {
+    event.currentTarget.closest("figure")?.classList.remove("media-load-error");
+  }
+
+  _handleResourceKeydown(event, index) {
+    if (event.code !== "Enter" && event.code !== "Space") return;
+
+    event.preventDefault();
+    this._selectResource(index);
   }
 
   _loadImageForPopup() {
@@ -362,6 +478,7 @@ class GalleryCard extends LitElement {
       if (this._currentResource().pendingAuth) return;
 
       modalImg.src = this._currentResource().url;
+      modalImg.alt = this._currentResource().caption || this._currentResource().name;
       captionText.textContent = this._currentResource().caption;
     }
   }
@@ -381,14 +498,27 @@ class GalleryCard extends LitElement {
   }
 
   _keyNavigation(event) {
+    const eventTarget = event.composedPath()[0];
+    const isEditableTarget = eventTarget?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT", "VIDEO"].includes(eventTarget?.tagName);
+    const modal = this.shadowRoot.querySelector("#imageModal");
+
+    if (event.code === "Escape" && modal?.style.display === "block") {
+      this._closeImageModal();
+      return;
+    }
+
+    if (isEditableTarget || (!this.matches(":hover") && !this.shadowRoot.activeElement)) return;
+
     switch (event.code) {
       case "ArrowDown":
       case "ArrowRight": {
+        event.preventDefault();
         this._selectResource(this.currentResourceIndex + 1);
         break;
       }
       case "ArrowUp":
       case "ArrowLeft": {
+        event.preventDefault();
         this._selectResource(this.currentResourceIndex - 1);
         break;
       }
@@ -403,15 +533,16 @@ class GalleryCard extends LitElement {
   }
 
   _handleTouchMove(event) {
-    if (!this.xDown || !this.yDown) {
+    if (this.xDown === undefined || this.yDown === undefined) {
       return;
     }
     const xUp = event.touches[0].clientX;
     const yUp = event.touches[0].clientY;
     const xDiff = this.xDown - xUp;
     const yDiff = this.yDown - yUp;
+    let gestureHandled = false;
 
-    if (Math.abs(xDiff) > Math.abs(yDiff)) {/* most significant */
+    if (Math.abs(xDiff) >= 40 && Math.abs(xDiff) > Math.abs(yDiff)) {/* most significant */
       if (xDiff > 0) {
         /* left swipe */
         this._selectResource(this.currentResourceIndex + 1);
@@ -421,17 +552,15 @@ class GalleryCard extends LitElement {
         this._selectResource(this.currentResourceIndex - 1);
         event.preventDefault();
       }
-    } else {
-      // if ( yDiff > 0 ) {
-      /* up swipe */
-      // } else {
-      /* down swipe */
-      // }
+      gestureHandled = true;
+    } else if (Math.abs(yDiff) >= 40) {
+      gestureHandled = true;
     }
 
-    /* reset values */
-    this.xDown = undefined;
-    this.yDown = undefined;
+    if (gestureHandled) {
+      this.xDown = undefined;
+      this.yDown = undefined;
+    }
   }
 
   _handleDateChange(event) {
@@ -463,6 +592,8 @@ class GalleryCard extends LitElement {
   }
 
   async _loadResources(hass) {
+    if (!hass || !this.config) return;
+
     if (this._isLoading) {
       this._pendingLoadRequested = true;
       return;
@@ -473,20 +604,22 @@ class GalleryCard extends LitElement {
 
     this.currentResourceIndex = undefined;
     this.resources = [];
+    this.errors = [];
+    this._previewErrorIndex = undefined;
 
     let filterForDate = (this.config.enable_date_search ?? false) && this._isDateFiltered;
 
-    let maximumFilesRaw = this.config.maximum_files;
-    if (maximumFilesRaw === 0) maximumFilesRaw = undefined;
+    const configuredMaximumFiles = Number(this.config.maximum_files);
+    const maximumFilesRaw = Number.isFinite(configuredMaximumFiles) && configuredMaximumFiles > 0 ? Math.floor(configuredMaximumFiles) : undefined;
 
     const maximumFilesPerEntity = this.config.maximum_files_per_entity ?? true;
     const maximumFiles = maximumFilesPerEntity ? maximumFilesRaw : undefined;
     const maximumFilesTotal = maximumFilesPerEntity ? undefined : maximumFilesRaw;
 
-    let folderFormat = this._convertOldFormat(this.config.folder_format);
-    let fileNameFormat = this._convertOldFormat(this.config.file_name_format);
-    let fileNameDateBegins = this.config.file_name_date_begins;
-    let captionFormat = this._convertOldFormat(this.config.caption_format);
+    const cardFolderFormat = this._convertOldFormat(this.config.folder_format);
+    const cardFileNameFormat = this._convertOldFormat(this.config.file_name_format);
+    const cardFileNameDateBegins = this.config.file_name_date_begins;
+    const cardCaptionFormat = this._convertOldFormat(this.config.caption_format);
     const parsedDateSort = this.config.parsed_date_sort ?? false;
     const reverseSort = this.config.reverse_sort ?? true;
     const randomSort = this.config.random_sort ?? false;
@@ -499,8 +632,12 @@ class GalleryCard extends LitElement {
         let recursive = false;
         let includeVideo = true;
         let includeImages = true;
+        let folderFormat = cardFolderFormat;
+        let fileNameFormat = cardFileNameFormat;
+        let fileNameDateBegins = cardFileNameDateBegins;
+        let captionFormat = cardCaptionFormat;
 
-        if (typeof entity === "object") {
+        if (entity && typeof entity === "object") {
           entityId = entity.path;
           if (entity.recursive) recursive = entity.recursive;
           if (entity.include_video !== undefined) includeVideo = entity.include_video;
@@ -513,7 +650,13 @@ class GalleryCard extends LitElement {
           entityId = entity;
         }
 
-        if (entityId.substring(0, 15).toLowerCase() === "media-source://") {
+        if (typeof entityId !== "string" || !entityId.trim()) {
+          entityCommands.push(Promise.resolve({
+            error: true,
+            entity: String(entityId || "未配置来源"),
+            message: "Invalid media source"
+          }));
+        } else if (entityId.substring(0, 15).toLowerCase() === "media-source://") {
           entityCommands.push(this._loadMediaResource(hass, entityId, maximumFiles, folderFormat, fileNameFormat, fileNameDateBegins, captionFormat, recursive, reverseSort, includeVideo, includeImages, filterForDate));
         } else {
           const entityState = hass.states[entityId];
@@ -614,16 +757,24 @@ class GalleryCard extends LitElement {
       }
 
       this.currentResourceIndex = 0;
-      this._resolvePendingResources(hass, loadToken);
+      this._resolveVisiblePendingResources(0, this._itemsToShow);
       this._addKeyNavigationListener();
 
-      this.errors = [];
-      for (const error of resources.filter(result => result.error).flat(Number.POSITIVE_INFINITY)) {
-        this.errors.push(error.message + " " + error.entity);
+      const loadErrors = resources.filter(result => result.error).flat(Number.POSITIVE_INFINITY);
+
+      this.errors = loadErrors.map(error => error.message + " " + error.entity);
+      for (const error of loadErrors) {
         this._hass.callService("system_log", "write", {
           message: "Gallery Card Error:  " + error.message + "   " + error.entity
         });
       }
+    } catch (error) {
+      if (loadToken === this._loadToken) {
+        this.resources = [];
+        this.currentResourceIndex = 0;
+        this.errors = [error?.message || "Unknown gallery loading error"];
+      }
+      console.error("Gallery Card failed to load resources", error);
     } finally {
       if (loadToken === this._loadToken) {
         this._isLoading = false;
@@ -651,13 +802,11 @@ class GalleryCard extends LitElement {
     this._hasKeyNavigationListener = false;
   }
 
-  _loadMediaResource(hass, contentId, maximumFiles, folderFormat, fileNameFormat, fileNameDateBegins, captionFormat, recursive, reverseSort, includeVideo, includeImages, filterForDate) {
-    // eslint-disable-next-line no-async-promise-executor
-    return new Promise(async (resolve) => {
-      let mediaPath = contentId;
+  async _loadMediaResource(hass, contentId, maximumFiles, folderFormat, fileNameFormat, fileNameDateBegins, captionFormat, recursive, reverseSort, includeVideo, includeImages, filterForDate) {
+    let mediaPath = contentId;
 
-      try {
-        let values = [];
+    try {
+      let values = [];
 
         if (folderFormat && reverseSort && maximumFiles !== undefined && !Number.isNaN(maximumFiles)) {  // Can do more targeted folder searching under these conditions
           let date = dayjs();
@@ -699,28 +848,27 @@ class GalleryCard extends LitElement {
         } else
           values = await this._loadMedia(this, hass, mediaPath, maximumFiles, recursive, reverseSort, includeVideo, includeImages, filterForDate);
 
-        const resources = [];
+      const resources = [];
 
-        for (const mediaItem of values) {
-          const resource = mediaItem.pending_authentication ?
-            this._createPendingMediaResource(mediaItem, fileNameFormat, fileNameDateBegins, captionFormat) :
-            this._createFileResource(mediaItem.authenticated_path, fileNameFormat, fileNameDateBegins, captionFormat);
+      for (const mediaItem of values) {
+        const resource = mediaItem.pending_authentication ?
+          this._createPendingMediaResource(mediaItem, fileNameFormat, fileNameDateBegins, captionFormat) :
+          this._createFileResource(mediaItem.authenticated_path, fileNameFormat, fileNameDateBegins, captionFormat);
 
-          if (resource !== undefined) {
-            resources.push(resource);
-          }
+        if (resource !== undefined) {
+          resource.mediaContentId = mediaItem.media_content_id;
+          resources.push(resource);
         }
-        resolve(resources);
-      } catch (error) {
-        console.log(error);
-        resolve({
-          error: true,
-          entity: mediaPath,
-          message: error.message
-        });
       }
-
-    });
+      return resources;
+    } catch (error) {
+      console.error("Gallery Card failed to load media source", error);
+      return {
+        error: true,
+        entity: mediaPath,
+        message: error.message
+      };
+    }
   }
 
   async _loadMedia(reference, hass, contentId, maximumFiles, recursive, reverseSort, includeVideo, includeImages, filterForDate) {
@@ -755,7 +903,7 @@ class GalleryCard extends LitElement {
       mediaItems.length = maximumFiles;
     }
 
-    const priorityCount = Math.min(reference._itemsToShow || 10, mediaItems.length);
+    const priorityCount = Math.min(1, mediaItems.length);
     const priorityItems = mediaItems.slice(0, priorityCount);
     const deferredItems = mediaItems.slice(priorityCount).map(item => ({
       ...item,
@@ -768,7 +916,11 @@ class GalleryCard extends LitElement {
             ...mediaItem,
             authenticated_path: auth.url
           };
-        });
+        })
+        .catch(() => ({
+          ...mediaItem,
+          pending_authentication: true
+        }));
     }));
 
     return resolvedItems.concat(deferredItems);
@@ -864,8 +1016,8 @@ class GalleryCard extends LitElement {
   _loadFilesResources(files, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort) {
     const resources = [];
 
-    if (files) {
-      files = files.filter(file => !file.includes("@eaDir"));
+    if (Array.isArray(files)) {
+      files = [...files].filter(file => typeof file === "string" && !file.includes("@eaDir"));
 
       if (reverseSort)
         files.reverse();
@@ -876,12 +1028,19 @@ class GalleryCard extends LitElement {
 
       for (const file of files) {
         const filePath = file;
-        // /config/downloads/front_door/
-        // /config/www/...
-        let fileUrl = filePath.replace("/config/www/", "/local/");
+        let fileUrl;
 
-        if (!filePath.includes("/config/www/"))
-          fileUrl = "/local/" + filePath.slice(Math.max(0, filePath.indexOf("/www/") + 5));
+        if (filePath.startsWith("/local/") || filePath.startsWith("http://") || filePath.startsWith("https://")) {
+          fileUrl = filePath;
+        } else if (filePath.includes("/config/www/")) {
+          fileUrl = filePath.replace("/config/www/", "/local/");
+        } else if (filePath.includes("/www/")) {
+          fileUrl = "/local/" + filePath.slice(filePath.indexOf("/www/") + 5);
+        } else if (!filePath.startsWith("/")) {
+          fileUrl = "/local/" + filePath;
+        } else {
+          continue;
+        }
 
         const resource = this._createFileResource(fileUrl, fileNameFormat, fileNameDateBegins, captionFormat);
 
@@ -909,7 +1068,11 @@ class GalleryCard extends LitElement {
       const extension = arFileName.at(-1).toLowerCase();
 
       fileName = fileName.slice(0, Math.max(0, fileName.length - extension.length - 1));
-      fileName = decodeURIComponent(fileName);
+      try {
+        fileName = decodeURIComponent(fileName);
+      } catch {
+        // Keep malformed percent-encoded filenames readable instead of dropping the resource.
+      }
 
       if (captionFormat !== " ")
         fileCaption = fileName;
@@ -957,30 +1120,6 @@ class GalleryCard extends LitElement {
     };
   }
 
-  _resolvePendingResources(hass, loadToken) {
-    setTimeout(() => {
-      const pendingResources = (this.resources || []).filter(resource => resource.pendingAuth && resource.mediaContentId);
-      const concurrency = 4;
-      let nextIndex = 0;
-
-      const run = async () => {
-        while (nextIndex < pendingResources.length && loadToken === this._loadToken) {
-          const batch = pendingResources.slice(nextIndex, nextIndex + concurrency);
-
-          nextIndex += concurrency;
-
-          const resolvedItems = await Promise.all(batch.map(resource => {
-            return this._resolveResourceUrl(resource, hass, loadToken, false);
-          }));
-
-          this._applyResolvedResourceUrls(resolvedItems.filter(Boolean), loadToken);
-        }
-      };
-
-      run();
-    }, 0);
-  }
-
   _resolveVisiblePendingResources(startIndex = 0, endIndex = this._itemsToShow) {
     const visiblePendingResources = (this.resources || [])
       .slice(startIndex, endIndex)
@@ -991,7 +1130,7 @@ class GalleryCard extends LitElement {
     }
   }
 
-  _resolveResourceUrl(resource, hass = this._hass, loadToken = this._loadToken, applyUpdate = true) {
+  _resolveResourceUrl(resource, hass = this._hass, loadToken = this._loadToken) {
     if (!resource || !resource.pendingAuth || !resource.mediaContentId) return Promise.resolve();
 
     return this._fetchMediaItemWithCache(hass, resource.mediaContentId).then(auth => {
@@ -1000,15 +1139,24 @@ class GalleryCard extends LitElement {
         url: auth.url
       };
 
-      if (applyUpdate) {
-        this._applyResolvedResourceUrls([resolvedItem], loadToken);
-      }
+      this._applyResolvedResourceUrls([resolvedItem], loadToken);
 
       return resolvedItem;
     }).catch(error => {
-      console.log(error);
+      this._applyResourceResolveError(resource.mediaContentId, loadToken);
+      console.error("Gallery Card failed to resolve media URL", error);
       return undefined;
     });
+  }
+
+  _applyResourceResolveError(mediaContentId, loadToken) {
+    if (loadToken !== this._loadToken) return;
+
+    this.resources = (this.resources || []).map(item => item.mediaContentId === mediaContentId ? {
+      ...item,
+      pendingAuth: false,
+      resolveError: true
+    } : item);
   }
 
   _applyResolvedResourceUrls(resolvedItems, loadToken) {
@@ -1024,7 +1172,8 @@ class GalleryCard extends LitElement {
       return {
         ...item,
         url,
-        pendingAuth: false
+        pendingAuth: false,
+        resolveError: false
       };
     });
 
@@ -1047,6 +1196,8 @@ class GalleryCard extends LitElement {
         --gallery-card-primary-color: var(--primary-color, #03a9f4);
         --gallery-card-text-color: var(--primary-text-color, #212121);
         --gallery-card-bg-color: var(--card-background-color, #fff);
+        display: block;
+        container-type: inline-size;
       }
       .content {
         overflow: hidden;
@@ -1072,8 +1223,8 @@ class GalleryCard extends LitElement {
         align-items: center;
         overflow: hidden;
         align-self: flex-start;
-        height: calc(100vh - var(--header-height, 56px));
-        max-height: calc(100vh - var(--header-height, 56px));
+        height: calc(100dvh - var(--header-height, 56px));
+        max-height: calc(100dvh - var(--header-height, 56px));
       }
       .resource-viewer::after {
         content: "";
@@ -1129,24 +1280,28 @@ class GalleryCard extends LitElement {
         --mdc-icon-size: 42px;
         opacity: 0.75;
       }
+      .error-state ha-icon {
+        color: var(--error-color, #db4437);
+      }
       .resource-menu-container {
         display: flex;
         flex-direction: column;
         background: var(--secondary-background-color, #f5f5f5);
-        overflow-y: auto;
+        overflow: hidden;
         min-height: 0;
       }
       .card-header-actions {
         display: grid;
-        grid-template-columns: 1fr auto 1fr;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
         align-items: center;
+        gap: 8px;
         padding: 8px 16px;
         min-height: 48px;
         box-sizing: border-box;
         border-bottom: 1px solid var(--divider-color, #e0e0e0);
         background: var(--gallery-card-bg-color);
       }
-      @media all and (max-width: 599px) {
+      @container (max-width: 599px) {
         .card-header-actions {
           padding: 6px 12px;
         }
@@ -1154,6 +1309,9 @@ class GalleryCard extends LitElement {
       .action-text {
         cursor: pointer;
         color: var(--gallery-card-primary-color);
+        border: 0;
+        background: transparent;
+        font-family: inherit;
         font-size: 0.9em;
         font-weight: 500;
         padding: 4px 8px;
@@ -1164,9 +1322,47 @@ class GalleryCard extends LitElement {
       .action-text:hover {
         background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
       }
-      .btn-clear-date {
+      .header-leading {
+        grid-column: 1;
+        min-width: 0;
+      }
+      .card-title {
+        color: var(--gallery-card-text-color);
+        font-size: 0.95em;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .header-trailing {
         grid-column: 3;
-        justify-self: end;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 2px;
+      }
+      .icon-button {
+        width: 32px;
+        height: 32px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: transparent;
+        color: var(--gallery-card-text-color);
+        cursor: pointer;
+      }
+      .icon-button:hover {
+        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
+        color: var(--gallery-card-primary-color);
+      }
+      .icon-button:disabled {
+        cursor: default;
+        opacity: 0.45;
+      }
+      .btn-clear-date {
         color: var(--error-color, #db4437);
       }
       .date-filter-container {
@@ -1174,8 +1370,8 @@ class GalleryCard extends LitElement {
         display: flex;
         align-items: center;
         background: var(--secondary-background-color, #f5f5f5);
-        border-radius: 20px;
-        padding: 4px 16px;
+        border-radius: 8px;
+        padding: 4px 10px;
         border: 1px solid var(--divider-color, #e0e0e0);
         height: 32px;
         box-sizing: border-box;
@@ -1191,6 +1387,15 @@ class GalleryCard extends LitElement {
         text-align: center;
         height: 24px;
         line-height: normal;
+      }
+      .error-list {
+        flex: none;
+        max-height: 112px;
+        padding: 8px;
+        overflow-y: auto;
+        box-sizing: border-box;
+        background: var(--gallery-card-bg-color);
+        border-bottom: 1px solid var(--divider-color, #e0e0e0);
       }
       figcaption {
         position: absolute;
@@ -1232,33 +1437,44 @@ class GalleryCard extends LitElement {
         padding: 0 10px;
         pointer-events: none;
       }
-      .nav-text-btn {
+      .nav-icon-btn {
         pointer-events: auto;
+        width: 44px;
+        height: 44px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
         background: rgba(0, 0, 0, 0.5);
         color: #fff;
-        padding: 8px 16px;
-        border-radius: 4px;
         cursor: pointer;
         opacity: 0;
-        transition: all 0.3s ease;
+        transition: opacity 0.2s ease, background 0.2s ease;
         user-select: none;
-        font-weight: 500;
-        font-size: 0.9em;
       }
-      .resource-viewer:hover .nav-text-btn {
+      .nav-icon-btn ha-icon {
+        --mdc-icon-size: 30px;
+      }
+      .resource-viewer:hover .nav-icon-btn,
+      .nav-icon-btn:focus-visible {
         opacity: 1;
       }
-      .nav-text-btn:hover {
+      .nav-icon-btn:hover {
         background: rgba(0, 0, 0, 0.8);
       }
       .resource-menu {
         padding: 12px;
         display: grid;
         grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+        grid-auto-rows: max-content;
         gap: 12px;
         overflow-y: auto;
         align-content: flex-start;
         min-height: 0;
+        width: 100%;
+        box-sizing: border-box;
       }
       .resource-menu::-webkit-scrollbar {
         width: 4px;
@@ -1269,13 +1485,17 @@ class GalleryCard extends LitElement {
       }
       .resource-menu figure {
         margin: 0 !important;
+        width: 100%;
+        height: auto;
         cursor: pointer;
-        border-radius: 12px;
+        border-radius: 8px;
         overflow: hidden;
         background: #222;
         transition: transform 0.2s ease, box-shadow 0.2s ease;
         position: relative;
         aspect-ratio: 16/9;
+        align-self: start;
+        box-sizing: border-box;
         box-shadow: 0 2px 8px rgba(0,0,0,0.2);
       }
       .resource-menu figure:hover {
@@ -1286,6 +1506,10 @@ class GalleryCard extends LitElement {
         outline: 2px solid var(--gallery-card-primary-color);
         outline-offset: 2px;
         box-shadow: 0 0 0 4px rgba(var(--rgb-primary-color, 3, 169, 244), 0.2);
+      }
+      .resource-menu figure:focus-visible {
+        outline: 2px solid var(--gallery-card-primary-color);
+        outline-offset: 2px;
       }
       .resource-skeleton {
         cursor: default !important;
@@ -1319,10 +1543,48 @@ class GalleryCard extends LitElement {
         text-align: center;
         font-size: 0.9em;
       }
+      .thumbnail-loading,
+      .thumbnail-error,
+      .video-placeholder {
+        width: 100%;
+        height: 100%;
+      }
+      .thumbnail-error,
+      .video-placeholder {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 4px;
+        color: rgba(255, 255, 255, 0.76);
+        font-size: 0.78em;
+      }
+      .thumbnail-error ha-icon,
+      .video-placeholder ha-icon {
+        --mdc-icon-size: 28px;
+      }
+      .resource-menu figure.media-load-error img,
+      .resource-menu figure.media-load-error video {
+        display: none;
+      }
+      .resource-menu figure.media-load-error::before {
+        content: "加载失败";
+        position: absolute;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: rgba(255, 255, 255, 0.76);
+        font-size: 0.78em;
+      }
       .resource-menu img, .resource-menu video {
         width: 100%;
         height: 100%;
         object-fit: cover;
+      }
+      .resource-menu .lzy_img:not([src]),
+      .resource-menu .lzy_video:not([src]) {
+        opacity: 0;
       }
       .resource-menu figcaption {
         position: absolute;
@@ -1336,30 +1598,34 @@ class GalleryCard extends LitElement {
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      @media all and (min-width: 601px) {
+      @container (min-width: 600px) {
         .resource-menu figcaption {
           font-size: 1.1em;
         }
       }
       .load-more {
         grid-column: 1 / -1;
+        width: 100%;
         text-align: center;
         padding: 6px;
+        border: 0;
+        background: transparent;
+        font: inherit;
         cursor: pointer;
         color: var(--gallery-card-primary-color);
         font-weight: 500;
         transition: background 0.2s;
-        border-radius: 8px;
+        border-radius: 4px;
       }
       .load-more:hover {
-        background: rgba(var(--rgb-primary-color), 0.1);
+        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
       }
 
       /* Layout modes */
       .menu-responsive {
         flex-direction: column;
       }
-      @media all and (min-width: 600px) {
+      @container (min-width: 600px) {
         .menu-responsive,
         .menu-right,
         .menu-left {
@@ -1370,15 +1636,17 @@ class GalleryCard extends LitElement {
           flex-direction: row;
         }
         .menu-responsive .resource-viewer {
-          flex: 3;
+          flex: 1 1 auto;
+          min-width: 0;
         }
         .menu-responsive .resource-menu-container {
-          flex: 1;
+          flex: 0 0 clamp(220px, 25%, 360px);
+          width: clamp(220px, 25%, 360px);
           height: 100%;
           max-height: 100%;
         }
         .menu-responsive .resource-menu {
-          flex: 1;
+          flex: 1 1 0;
           grid-template-columns: 1fr;
         }
       }
@@ -1395,38 +1663,55 @@ class GalleryCard extends LitElement {
         min-width: 120px;
       }
       .menu-right { flex-direction: row; }
-      .menu-right .resource-menu-container { width: 25%; height: 100%; max-height: 100%; }
-      .menu-right .resource-menu { flex: 1; grid-template-columns: 1fr; }
+      .menu-right .resource-viewer,
+      .menu-left .resource-viewer { flex: 1 1 auto; min-width: 0; }
+      .menu-right .resource-menu-container { width: clamp(220px, 25%, 360px); height: 100%; max-height: 100%; }
+      .menu-right .resource-menu { flex: 1 1 0; grid-template-columns: 1fr; }
       .menu-left { flex-direction: row-reverse; }
-      .menu-left .resource-menu-container { width: 25%; height: 100%; max-height: 100%; }
-      .menu-left .resource-menu { flex: 1; grid-template-columns: 1fr; }
+      .menu-left .resource-menu-container { width: clamp(220px, 25%, 360px); height: 100%; max-height: 100%; }
+      .menu-left .resource-menu { flex: 1 1 0; grid-template-columns: 1fr; }
       .menu-top { flex-direction: column-reverse; }
       .menu-top .resource-menu { display: flex; overflow-x: auto; overflow-y: hidden; }
       .menu-top .resource-menu figure { min-width: 120px; }
       .menu-hidden .resource-menu-container { display: none; }
 
-      @media all and (max-width: 599px) {
+      @container (max-width: 599px) {
         ha-card {
           flex-direction: column !important;
+          height: auto;
+          max-height: none;
+          overflow: visible;
         }
         .resource-viewer {
           position: relative;
           top: 0;
           height: auto;
+          max-height: none;
           aspect-ratio: 16/9;
           width: 100% !important;
         }
         .resource-menu-container {
           width: 100% !important;
+          height: auto !important;
+          max-height: none !important;
+          overflow: visible;
         }
         .resource-menu {
           grid-template-columns: repeat(3, 1fr) !important;
           display: grid !important;
+          flex: none !important;
+          overflow-y: visible;
         }
-        .nav-text-btn {
+        .nav-icon-btn {
           opacity: 0.82;
-          padding: 6px 10px;
-          font-size: 0.8em;
+          width: 38px;
+          height: 38px;
+        }
+      }
+
+      @container (max-width: 340px) {
+        .resource-menu {
+          grid-template-columns: repeat(2, 1fr) !important;
         }
       }
 
@@ -1453,6 +1738,26 @@ class GalleryCard extends LitElement {
         transform: translate(-50%, -50%);
         animation: zoom 0.3s;
       }
+      .modal-close {
+        position: absolute;
+        z-index: 1;
+        top: max(12px, env(safe-area-inset-top));
+        right: max(12px, env(safe-area-inset-right));
+        width: 44px;
+        height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        cursor: pointer;
+      }
+      .modal-close ha-icon {
+        --mdc-icon-size: 28px;
+      }
       #popupCaption {
         position: absolute;
         bottom: 20px;
@@ -1471,6 +1776,14 @@ class GalleryCard extends LitElement {
       @keyframes gallery-card-shimmer {
         0% { background-position: 100% 0; }
         100% { background-position: -100% 0; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          scroll-behavior: auto !important;
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          transition-duration: 0.01ms !important;
+        }
       }
     `;
   }

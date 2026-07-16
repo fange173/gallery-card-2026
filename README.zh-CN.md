@@ -15,9 +15,10 @@
 - 大图/视频预览区，缩略图列表可显示在右侧、左侧、顶部、底部，也可隐藏或使用响应式布局。
 - 支持图片、视频、Home Assistant 相机实体、`media-source://` 路径和文件列表传感器属性。
 - 预览区和缩略图列表都有加载中与空状态。
-- 缩略图懒加载，并优先解析首屏媒体 URL，提升首次显示速度。
+- 缩略图懒加载，仅解析当前可见页面所需的媒体 URL。
 - 支持日期筛选，可配合文件夹或文件名日期解析。
 - 支持触摸滑动、键盘方向键导航，移动端会显示上一张/下一张按钮。
+- 列表工具栏支持显示标题和手动刷新按钮。
 - 支持可选幻灯片播放和视频播放设置。
 - 会清理键盘监听、懒加载观察器、幻灯片定时器和临时媒体 URL 缓存。
 
@@ -51,6 +52,7 @@ enable_date_search: true
 search_date_folder_format: YYYYMMDD
 file_name_format: YYYYMMDDHHmmss
 caption_format: MM/DD HH:mm
+show_reload: true
 ```
 
 ## 本地开发
@@ -120,8 +122,10 @@ entities:
 
 | 名称 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
+| `title` | string | 无 | 在列表工具栏中显示紧凑标题。 |
 | `menu_alignment` | string | `responsive` | 可选 `responsive`、`right`、`left`、`bottom`、`top`、`hidden`。 |
 | `items_per_page` | number | `10` | 初始缩略图数量，也是点击“更多”时每次增加的数量。 |
+| `show_reload` | boolean | `false` | 在列表工具栏中显示手动刷新按钮。 |
 
 ### 数量限制与排序
 
@@ -161,7 +165,7 @@ entities:
 
 ## 说明
 
-- `media-source://` 条目需要解析 `resolve_media` URL。卡片会优先解析当前可见首屏，然后小批量解析剩余媒体。
+- `media-source://` 条目需要解析 `resolve_media` URL。卡片会优先解析当前可见首屏，之后仅在更多条目变为可见或被选中时继续解析。
 - 临时媒体 URL 的缓存时间短于 Home Assistant resolve 过期窗口。
 - 文件列表传感器需要提供 `fileList` 或 `file_list` 属性。
 - 根目录的 `gallery-card.js` 由 `src/gallery-card.js` 构建生成。

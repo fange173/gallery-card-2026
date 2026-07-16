@@ -30,7 +30,7 @@ jobs:
             ${{ runner.OS }}-node-20.x
             ${{ runner.OS }}-
       - name: Install dependencies
-        run: npm install --frozen-lockfile
+        run: npm ci
       - name: Release
         run: npx semantic-release
         env:

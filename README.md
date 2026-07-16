@@ -15,9 +15,10 @@ This project is a fork adapted for a more gallery-like layout, date filtering, l
 - Large preview area with thumbnail list on the right, left, top, bottom, hidden, or responsive layout.
 - Supports images, videos, Home Assistant camera entities, `media-source://` paths, and file-list sensor attributes.
 - Loading and empty states for the preview and thumbnail list.
-- Lazy thumbnail loading with first-page media URL resolution prioritized for faster initial display.
+- Lazy thumbnail loading with media URLs resolved only for visible pages.
 - Date filtering with optional folder/date parsing.
 - Touch swipe, keyboard arrow navigation, and mobile-visible previous/next controls.
+- Optional title and manual reload action in the compact list toolbar.
 - Optional slideshow and video playback settings.
 - Safe cleanup for keyboard listeners, lazy-load observer, slideshow timer, and temporary media URL cache.
 
@@ -51,6 +52,7 @@ enable_date_search: true
 search_date_folder_format: YYYYMMDD
 file_name_format: YYYYMMDDHHmmss
 caption_format: MM/DD HH:mm
+show_reload: true
 ```
 
 ## Local Development
@@ -120,8 +122,10 @@ Supported object fields:
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
+| `title` | string | none | Compact title shown in the list toolbar. |
 | `menu_alignment` | string | `responsive` | `responsive`, `right`, `left`, `bottom`, `top`, or `hidden`. |
 | `items_per_page` | number | `10` | Initial thumbnail count and increment size for "more". |
+| `show_reload` | boolean | `false` | Show a manual media reload button in the list toolbar. |
 
 ### Limits And Sorting
 
@@ -161,7 +165,7 @@ Old strftime-like tokens such as `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` are converte
 
 ## Notes
 
-- `media-source://` items need `resolve_media` URLs. The card resolves the first visible page first, then resolves remaining media in small batches.
+- `media-source://` items need `resolve_media` URLs. The card resolves the first visible page first, then resolves additional items only when they become visible or selected.
 - Temporary media URLs are cached for less than the Home Assistant resolve expiration window.
 - File-list sensors are expected to expose `fileList` or `file_list` attributes.
 - The root `gallery-card.js` file is generated from `src/gallery-card.js`.
