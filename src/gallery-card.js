@@ -40,7 +40,11 @@ class GalleryCard extends LitElement {
     this._keyNavigationHandler = event => this._keyNavigation(event);
     this._mediaResolveCache = new Map();
     this._mediaResolveInflight = new Map();
+    this._queuedResolveIds = new Map();
     this._mediaResolveCacheMs = 2.5 * 60 * 60 * 1000;
+    this._mediaBrowseCache = new Map();
+    this._mediaBrowseInflight = new Map();
+    this._browseCacheGeneration = 0;
     this._loadToken = 0;
     this._pendingLoadRequested = false;
     this._slideshowTimer = undefined;
@@ -118,7 +122,7 @@ class GalleryCard extends LitElement {
         return html`
                     <figure id="resource${index}" data-imageIndex="${index}" @click="${() => this._selectResource(index)}" @keydown="${event => this._handleResourceKeydown(event, index)}" class="${(index === this.currentResourceIndex) ? 'selected' : ''}" tabindex="0" role="button" aria-label="${resource.caption || resource.name || `媒体 ${index + 1}`}">
                     ${resource.pendingAuth ?
-            html`<div class="thumbnail-loading">
+            html`<div class="thumbnail-loading" data-resource-index="${index}">
                             <div class="skeleton-media"></div>
                           </div>` :
           resource.resolveError ?
@@ -205,13 +209,14 @@ class GalleryCard extends LitElement {
 
   updated() {
     this._createImageObserver();
-    const mediaArray = this.shadowRoot.querySelectorAll('img.lzy_img, video.lzy_video');
+    const mediaArray = this.shadowRoot.querySelectorAll('img.lzy_img, video.lzy_video, .thumbnail-loading[data-resource-index]');
 
     for (const v of mediaArray) {
       if (v.dataset.src) {
         v.closest("figure")?.classList.remove("media-load-error");
         this.imageObserver.observe(v);
       }
+      if (v.dataset.resourceIndex !== undefined) this.imageObserver.observe(v);
     }
   }
 
@@ -219,11 +224,18 @@ class GalleryCard extends LitElement {
     if (this.imageObserver) return;
 
     this.imageObserver = new IntersectionObserver((entries) => {
+      const pendingResources = [];
+
       for (const entry of entries) {
         if (entry.isIntersecting) {
           const lazyMedia = entry.target;
 
-          if (lazyMedia.dataset.src) {
+          if (lazyMedia.dataset.resourceIndex !== undefined) {
+            const resourceIndex = Number.parseInt(lazyMedia.dataset.resourceIndex);
+            const resource = this.resources?.[resourceIndex];
+
+            if (resource?.pendingAuth && resource.mediaContentId) pendingResources.push(resource);
+          } else if (lazyMedia.dataset.src) {
             lazyMedia.src = lazyMedia.dataset.src;
             if (lazyMedia.tagName === 'VIDEO') {
               lazyMedia.load();
@@ -232,6 +244,12 @@ class GalleryCard extends LitElement {
           }
           this.imageObserver.unobserve(lazyMedia);
         }
+      }
+
+      if (pendingResources.length > 0) {
+        const pendingById = new Map(pendingResources.map(resource => [resource.mediaContentId, resource]));
+
+        this._resolvePendingResourceBatch([...pendingById.values()], this._hass, this._loadToken);
       }
     });
   }
@@ -249,6 +267,11 @@ class GalleryCard extends LitElement {
 
     const menuAlignment = String(config.menu_alignment || "responsive").toLowerCase();
     const itemsPerPage = Number.parseInt(config.items_per_page);
+    const browseCacheSeconds = Number(config.browse_cache_seconds);
+    const mediaCacheSize = Number.parseInt(config.media_cache_size);
+    const resolveConcurrency = Number.parseInt(config.resolve_concurrency);
+    const dateSearchAdjacentDays = Number.parseInt(config.date_search_adjacent_days);
+    const previousEntities = JSON.stringify(this.config?.entities || []);
     const configWithoutEntity = { ...config };
 
     delete configWithoutEntity.entity;
@@ -257,8 +280,13 @@ class GalleryCard extends LitElement {
       ...configWithoutEntity,
       entities,
       menu_alignment: ValidMenuAlignments.has(menuAlignment) ? menuAlignment : "responsive",
-      items_per_page: Number.isFinite(itemsPerPage) && itemsPerPage > 0 ? itemsPerPage : 10
+      items_per_page: Number.isFinite(itemsPerPage) && itemsPerPage > 0 ? itemsPerPage : 10,
+      browse_cache_seconds: Number.isFinite(browseCacheSeconds) && browseCacheSeconds >= 0 ? browseCacheSeconds : 20,
+      media_cache_size: Number.isFinite(mediaCacheSize) && mediaCacheSize > 0 ? mediaCacheSize : 500,
+      resolve_concurrency: Number.isFinite(resolveConcurrency) && resolveConcurrency > 0 ? Math.min(resolveConcurrency, 8) : 4,
+      date_search_adjacent_days: Number.isFinite(dateSearchAdjacentDays) && dateSearchAdjacentDays >= 0 ? Math.min(dateSearchAdjacentDays, 7) : 1
     };
+    if (previousEntities !== JSON.stringify(entities)) this._clearBrowseCache();
     this._itemsToShow = this.config.items_per_page;
     this._previewErrorIndex = undefined;
 
@@ -317,10 +345,8 @@ class GalleryCard extends LitElement {
 
   _loadMore() {
     const step = this.config.items_per_page;
-    const previousItemsToShow = this._itemsToShow;
 
     this._itemsToShow = Math.min(this._itemsToShow + step, this.resources.length);
-    this._resolveVisiblePendingResources(previousItemsToShow, this._itemsToShow);
   }
 
   _selectResource(index, fromSlideshow) {
@@ -432,8 +458,15 @@ class GalleryCard extends LitElement {
 
   _reloadResources() {
     this._mediaResolveCache.clear();
+    this._clearBrowseCache();
     this._previewErrorIndex = undefined;
     this._loadResources(this._hass);
+  }
+
+  _clearBrowseCache() {
+    this._browseCacheGeneration++;
+    this._mediaBrowseCache.clear();
+    this._mediaBrowseInflight.clear();
   }
 
   _handlePreviewError() {
@@ -613,7 +646,6 @@ class GalleryCard extends LitElement {
     const maximumFilesRaw = Number.isFinite(configuredMaximumFiles) && configuredMaximumFiles > 0 ? Math.floor(configuredMaximumFiles) : undefined;
 
     const maximumFilesPerEntity = this.config.maximum_files_per_entity ?? true;
-    const maximumFiles = maximumFilesPerEntity ? maximumFilesRaw : undefined;
     const maximumFilesTotal = maximumFilesPerEntity ? undefined : maximumFilesRaw;
 
     const cardFolderFormat = this._convertOldFormat(this.config.folder_format);
@@ -623,6 +655,8 @@ class GalleryCard extends LitElement {
     const parsedDateSort = this.config.parsed_date_sort ?? false;
     const reverseSort = this.config.reverse_sort ?? true;
     const randomSort = this.config.random_sort ?? false;
+    const canPrelimitEachEntity = maximumFilesPerEntity || (!parsedDateSort && !randomSort);
+    const maximumFiles = canPrelimitEachEntity ? maximumFilesRaw : undefined;
 
     const fetchAll = () => {
       const entityCommands = [];
@@ -672,10 +706,10 @@ class GalleryCard extends LitElement {
               entityCommands.push(this._loadCameraResource(entityId, entityState));
 
             if (entityState.attributes.fileList !== undefined)
-              entityCommands.push(this._loadFilesResources(entityState.attributes.fileList, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort));
+              entityCommands.push(this._loadFilesResources(entityState.attributes.fileList, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort, filterForDate));
 
             if (entityState.attributes.file_list !== undefined)
-              entityCommands.push(this._loadFilesResources(entityState.attributes.file_list, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort));
+              entityCommands.push(this._loadFilesResources(entityState.attributes.file_list, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort, filterForDate));
           }
         }
       }
@@ -686,13 +720,7 @@ class GalleryCard extends LitElement {
       let resources = await Promise.all(fetchAll());
       let flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
 
-      if (filterForDate) {
-        const selectedDateStr = dayjs(this.selectedDate).format("YYYY-MM-DD");
-        flatResources = flatResources.filter(resource => {
-          if (!resource.date || !dayjs(resource.date).isValid()) return true;
-          return dayjs(resource.date).format("YYYY-MM-DD") === selectedDateStr;
-        });
-      }
+      if (filterForDate) flatResources = this._filterResourcesForSelectedDate(flatResources);
 
       // 自动回溯逻辑
       if (this._isInitialLoad && filterForDate && flatResources.length === 0) {
@@ -706,13 +734,7 @@ class GalleryCard extends LitElement {
           resources = await Promise.all(fetchAll());
           flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
 
-          if (filterForDate) {
-            const selectedDateStr = dayjs(this.selectedDate).format("YYYY-MM-DD");
-            flatResources = flatResources.filter(resource => {
-              if (!resource.date || !dayjs(resource.date).isValid()) return true;
-              return dayjs(resource.date).format("YYYY-MM-DD") === selectedDateStr;
-            });
-          }
+          if (filterForDate) flatResources = this._filterResourcesForSelectedDate(flatResources);
         }
 
         // 如果回溯了30天还没找到，则显示全部
@@ -757,7 +779,7 @@ class GalleryCard extends LitElement {
       }
 
       this.currentResourceIndex = 0;
-      this._resolveVisiblePendingResources(0, this._itemsToShow);
+      this._resolveResourceUrl(this.resources[0]);
       this._addKeyNavigationListener();
 
       const loadErrors = resources.filter(result => result.error).flat(Number.POSITIVE_INFINITY);
@@ -807,48 +829,51 @@ class GalleryCard extends LitElement {
 
     try {
       let values = [];
+      const needsExactDateFilter = filterForDate && Boolean(fileNameFormat);
+      const includeAdjacentDateFolders = needsExactDateFilter && this.config.date_search_adjacent_days > 0;
+      const browseLimit = needsExactDateFilter ? undefined : maximumFiles;
 
-        if (folderFormat && reverseSort && maximumFiles !== undefined && !Number.isNaN(maximumFiles)) {  // Can do more targeted folder searching under these conditions
-          let date = dayjs();
-          let folderPrevious = "";
-          const failedPaths = [];
+      if (!filterForDate && folderFormat && reverseSort && maximumFiles !== undefined && !Number.isNaN(maximumFiles)) {  // Can do more targeted folder searching under these conditions
+        let date = dayjs();
+        let folderPrevious = "";
+        const failedPaths = [];
 
-          while (values.length < maximumFiles) {
-            const folder = date.format(folderFormat);
+        while (values.length < maximumFiles) {
+          const folder = date.format(folderFormat);
 
-            mediaPath = contentId + "/" + folder;
+          mediaPath = contentId + "/" + folder;
 
-            if (folder !== folderPrevious) {
-              try {
-                const folderValues = await this._loadMedia(this, hass, mediaPath, maximumFiles, false, reverseSort, includeVideo, includeImages, filterForDate);
+          if (folder !== folderPrevious) {
+            try {
+              const folderValues = await this._loadMedia(this, hass, mediaPath, maximumFiles, false, reverseSort, includeVideo, includeImages, false, false);
 
-                values.push(...folderValues);
-              } catch (error) {
-                if (error.code === 'browse_media_failed')
-                  failedPaths.push(mediaPath);
-                else
-                  throw error;
-              }
+              values.push(...folderValues);
+            } catch (error) {
+              if (error.code === 'browse_media_failed')
+                failedPaths.push(mediaPath);
+              else
+                throw error;
             }
-
-            if (failedPaths.length > 2) {
-              if (values.length === 0) {
-                mediaPath = failedPaths.join(',');
-                throw new Error('Failed to browse several folders and found no media files.  Verify your settings are correct.');
-              }
-              break;
-            }
-
-            folderPrevious = folder;
-            date = date.subtract(12, 'hour');  // Allows for AM/PM folders
           }
 
-          if (values.length > maximumFiles)
-            values.length = maximumFiles;
-        } else
-          values = await this._loadMedia(this, hass, mediaPath, maximumFiles, recursive, reverseSort, includeVideo, includeImages, filterForDate);
+          if (failedPaths.length > 2) {
+            if (values.length === 0) {
+              mediaPath = failedPaths.join(',');
+              throw new Error('Failed to browse several folders and found no media files.  Verify your settings are correct.');
+            }
+            break;
+          }
 
-      const resources = [];
+          folderPrevious = folder;
+          date = date.subtract(12, 'hour');  // Allows for AM/PM folders
+        }
+
+        values.sort((a, b) => String(b.title || "").localeCompare(String(a.title || "")));
+        if (values.length > maximumFiles) values.length = maximumFiles;
+      } else
+        values = await this._loadMedia(this, hass, mediaPath, browseLimit, recursive, reverseSort, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders);
+
+      let resources = [];
 
       for (const mediaItem of values) {
         const resource = mediaItem.pending_authentication ?
@@ -860,6 +885,10 @@ class GalleryCard extends LitElement {
           resources.push(resource);
         }
       }
+
+      if (needsExactDateFilter) resources = this._filterResourcesForSelectedDate(resources);
+      if (maximumFiles !== undefined && maximumFiles < resources.length) resources.length = maximumFiles;
+
       return resources;
     } catch (error) {
       console.error("Gallery Card failed to load media source", error);
@@ -871,7 +900,7 @@ class GalleryCard extends LitElement {
     }
   }
 
-  async _loadMedia(reference, hass, contentId, maximumFiles, recursive, reverseSort, includeVideo, includeImages, filterForDate) {
+  async _loadMedia(reference, hass, contentId, maximumFiles, recursive, reverseSort, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders) {
     const mediaItem = {
       media_class: "directory",
       media_content_id: contentId
@@ -881,7 +910,10 @@ class GalleryCard extends LitElement {
       mediaItem.media_content_id += "/";
     }
 
-    const values = await Promise.all(this._fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate));
+    const hasFiniteLimit = Number.isFinite(maximumFiles) && maximumFiles > 0;
+    const values = recursive && hasFiniteLimit ?
+      await this._fetchMediaLimited(reference, hass, mediaItem, maximumFiles, reverseSort, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders) :
+      await Promise.all(this._fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders));
     const mediaItems = values
       .flat(Number.POSITIVE_INFINITY)
       .filter(function (item) { return item !== undefined; })
@@ -903,30 +935,13 @@ class GalleryCard extends LitElement {
       mediaItems.length = maximumFiles;
     }
 
-    const priorityCount = Math.min(1, mediaItems.length);
-    const priorityItems = mediaItems.slice(0, priorityCount);
-    const deferredItems = mediaItems.slice(priorityCount).map(item => ({
+    return mediaItems.map(item => ({
       ...item,
       pending_authentication: true
     }));
-    const resolvedItems = await Promise.all(priorityItems.map(mediaItem => {
-      return reference._fetchMediaItemWithCache(hass, mediaItem.media_content_id)
-        .then(function (auth) {
-          return {
-            ...mediaItem,
-            authenticated_path: auth.url
-          };
-        })
-        .catch(() => ({
-          ...mediaItem,
-          pending_authentication: true
-        }));
-    }));
-
-    return resolvedItems.concat(deferredItems);
   }
 
-  _fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate) {
+  _fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders) {
     const commands = [];
 
     if (mediaItem.media_class === "directory") {
@@ -934,21 +949,17 @@ class GalleryCard extends LitElement {
         commands.push(
           ...mediaItem.children
             .filter(mediaItem => {
-              return ((includeVideo && mediaItem.media_class === "video") ||
-                (includeImages && mediaItem.media_class === "image") ||
-                (recursive && mediaItem.media_class === "directory" && (!filterForDate ||
-                  (mediaItem.title === reference._folderDateFormatter((reference.config.search_date_folder_format === undefined) ? "DD_MM_YYYY" : reference.config.search_date_folder_format, reference.selectedDate))))) &&
-                mediaItem.title !== "@eaDir/";
+              return this._shouldIncludeMediaItem(reference, mediaItem, recursive, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders);
             })
             .map(mediaItem => {
-              return Promise.all(reference._fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate));
+              return Promise.all(reference._fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders));
             }));
       }
       else {
         commands.push(
           reference._fetchMediaContents(hass, mediaItem.media_content_id)
             .then(mediaItem => {
-              return Promise.all(reference._fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate));
+              return Promise.all(reference._fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders));
             })
         );
       }
@@ -961,11 +972,90 @@ class GalleryCard extends LitElement {
     return commands;
   }
 
+  async _fetchMediaLimited(reference, hass, mediaItem, maximumFiles, reverseSort, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders) {
+    const collectedItems = [];
+    const sortDirection = reverseSort ? -1 : 1;
+
+    const visit = async item => {
+      if (collectedItems.length >= maximumFiles) return;
+
+      if (item.media_class !== "directory") {
+        collectedItems.push(item);
+        return;
+      }
+
+      const directory = item.children ? item : await this._fetchMediaContents(hass, item.media_content_id);
+      const children = [...(directory.children || [])]
+        .filter(child => this._shouldIncludeMediaItem(reference, child, true, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders))
+        .sort((a, b) => String(a.title || "").localeCompare(String(b.title || "")) * sortDirection);
+
+      for (const child of children) {
+        if (collectedItems.length >= maximumFiles) break;
+
+        if (child.media_class === "directory")
+          await visit(child);
+        else
+          collectedItems.push(child);
+      }
+    };
+
+    await visit(mediaItem);
+    return collectedItems;
+  }
+
+  _shouldIncludeMediaItem(reference, mediaItem, recursive, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders) {
+    if (!mediaItem || mediaItem.title === "@eaDir/") return false;
+    if (mediaItem.media_class === "video") return includeVideo;
+    if (mediaItem.media_class === "image") return includeImages;
+    if (!recursive || mediaItem.media_class !== "directory") return false;
+    if (!filterForDate) return true;
+
+    const folderFormat = reference.config.search_date_folder_format || "DD_MM_YYYY";
+    const folderTitle = String(mediaItem.title || "").replace(/\/$/, "");
+    const folderDate = dayjs(folderTitle, folderFormat, true);
+
+    // Keep traversing source/category folders; only constrain folders that are actual dates.
+    if (!folderDate.isValid() || folderDate.format(folderFormat) !== folderTitle) return true;
+
+    const folderNames = reference._getDateSearchFolderNames(folderFormat, includeAdjacentDateFolders);
+
+    return folderNames.has(folderTitle);
+  }
+
   _fetchMediaContents(hass, contentId) {
-    return hass.callWS({
+    const cacheMs = this.config.browse_cache_seconds * 1000;
+    const cached = this._mediaBrowseCache.get(contentId);
+
+    if (cacheMs > 0 && cached?.expiresAt > Date.now()) {
+      this._refreshCacheEntry(this._mediaBrowseCache, contentId, cached);
+      return Promise.resolve(cached.value);
+    }
+    if (cached) this._mediaBrowseCache.delete(contentId);
+
+    if (this._mediaBrowseInflight.has(contentId)) {
+      return this._mediaBrowseInflight.get(contentId);
+    }
+
+    const cacheGeneration = this._browseCacheGeneration;
+    const request = hass.callWS({
       type: "media_source/browse_media",
       media_content_id: contentId
+    }).then(value => {
+      if (cacheMs > 0 && cacheGeneration === this._browseCacheGeneration) {
+        this._setLimitedCacheEntry(this._mediaBrowseCache, contentId, {
+          value,
+          expiresAt: Date.now() + cacheMs
+        }, 100);
+      }
+      return value;
+    }).finally(() => {
+      if (this._mediaBrowseInflight.get(contentId) === request) {
+        this._mediaBrowseInflight.delete(contentId);
+      }
     });
+
+    this._mediaBrowseInflight.set(contentId, request);
+    return request;
   }
 
   _fetchMediaItem(hass, mediaItemPath) {
@@ -980,18 +1070,20 @@ class GalleryCard extends LitElement {
     const cached = this._mediaResolveCache.get(mediaItemPath);
 
     if (cached && cached.expiresAt > Date.now()) {
+      this._refreshCacheEntry(this._mediaResolveCache, mediaItemPath, cached);
       return Promise.resolve({ url: cached.url });
     }
+    if (cached) this._mediaResolveCache.delete(mediaItemPath);
 
     if (this._mediaResolveInflight.has(mediaItemPath)) {
       return this._mediaResolveInflight.get(mediaItemPath);
     }
 
     const request = this._fetchMediaItem(hass, mediaItemPath).then(auth => {
-      this._mediaResolveCache.set(mediaItemPath, {
+      this._setLimitedCacheEntry(this._mediaResolveCache, mediaItemPath, {
         url: auth.url,
         expiresAt: Date.now() + this._mediaResolveCacheMs
-      });
+      }, this.config.media_cache_size);
       return auth;
     }).finally(() => {
       this._mediaResolveInflight.delete(mediaItemPath);
@@ -999,6 +1091,21 @@ class GalleryCard extends LitElement {
 
     this._mediaResolveInflight.set(mediaItemPath, request);
     return request;
+  }
+
+  _refreshCacheEntry(cache, key, value) {
+    cache.delete(key);
+    cache.set(key, value);
+  }
+
+  _setLimitedCacheEntry(cache, key, value, maximumSize) {
+    this._refreshCacheEntry(cache, key, value);
+
+    while (cache.size > maximumSize) {
+      const oldestKey = cache.keys().next().value;
+
+      cache.delete(oldestKey);
+    }
   }
 
   _loadCameraResource(entityId, camera) {
@@ -1013,8 +1120,8 @@ class GalleryCard extends LitElement {
     return Promise.resolve(resource);
   }
 
-  _loadFilesResources(files, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort) {
-    const resources = [];
+  _loadFilesResources(files, maximumFiles, fileNameFormat, fileNameDateBegins, captionFormat, reverseSort, filterForDate) {
+    let resources = [];
 
     if (Array.isArray(files)) {
       files = [...files].filter(file => typeof file === "string" && !file.includes("@eaDir"));
@@ -1022,7 +1129,7 @@ class GalleryCard extends LitElement {
       if (reverseSort)
         files.reverse();
 
-      if (maximumFiles !== undefined && !Number.isNaN(maximumFiles) && maximumFiles < files.length) {
+      if (!filterForDate && maximumFiles !== undefined && !Number.isNaN(maximumFiles) && maximumFiles < files.length) {
         files.length = maximumFiles;
       }
 
@@ -1048,6 +1155,9 @@ class GalleryCard extends LitElement {
           resources.push(resource);
         }
       }
+
+      if (filterForDate && fileNameFormat) resources = this._filterResourcesForSelectedDate(resources);
+      if (maximumFiles !== undefined && maximumFiles < resources.length) resources.length = maximumFiles;
     }
 
     return Promise.resolve(resources);
@@ -1100,7 +1210,8 @@ class GalleryCard extends LitElement {
         extension,
         caption: fileCaption,
         index: -1,
-        date
+        date,
+        dateFilterable: Boolean(fileNameFormat)
       };
     }
 
@@ -1120,13 +1231,45 @@ class GalleryCard extends LitElement {
     };
   }
 
-  _resolveVisiblePendingResources(startIndex = 0, endIndex = this._itemsToShow) {
-    const visiblePendingResources = (this.resources || [])
-      .slice(startIndex, endIndex)
-      .filter(resource => resource.pendingAuth && resource.mediaContentId);
+  async _resolvePendingResourceBatch(resources, hass, loadToken) {
+    const concurrency = this.config.resolve_concurrency;
+    const pendingResources = resources.filter(resource => {
+      if (this._queuedResolveIds.get(resource.mediaContentId) === loadToken) return false;
 
-    for (const resource of visiblePendingResources) {
-      this._resolveResourceUrl(resource);
+      this._queuedResolveIds.set(resource.mediaContentId, loadToken);
+      return true;
+    });
+
+    try {
+      for (let index = 0; index < pendingResources.length; index += concurrency) {
+        if (loadToken !== this._loadToken) return;
+
+        const batch = pendingResources.slice(index, index + concurrency);
+        const results = await Promise.all(batch.map(async resource => {
+          try {
+            const auth = await this._fetchMediaItemWithCache(hass, resource.mediaContentId);
+
+            return {
+              mediaContentId: resource.mediaContentId,
+              url: auth.url
+            };
+          } catch (error) {
+            console.error("Gallery Card failed to resolve media URL", error);
+            return {
+              mediaContentId: resource.mediaContentId,
+              error: true
+            };
+          }
+        }));
+
+        this._applyResourceResolutionResults(results, loadToken);
+      }
+    } finally {
+      for (const resource of pendingResources) {
+        if (this._queuedResolveIds.get(resource.mediaContentId) === loadToken) {
+          this._queuedResolveIds.delete(resource.mediaContentId);
+        }
+      }
     }
   }
 
@@ -1139,49 +1282,71 @@ class GalleryCard extends LitElement {
         url: auth.url
       };
 
-      this._applyResolvedResourceUrls([resolvedItem], loadToken);
+      this._applyResourceResolutionResults([resolvedItem], loadToken);
 
       return resolvedItem;
     }).catch(error => {
-      this._applyResourceResolveError(resource.mediaContentId, loadToken);
+      this._applyResourceResolutionResults([{
+        mediaContentId: resource.mediaContentId,
+        error: true
+      }], loadToken);
       console.error("Gallery Card failed to resolve media URL", error);
       return undefined;
     });
   }
 
-  _applyResourceResolveError(mediaContentId, loadToken) {
-    if (loadToken !== this._loadToken) return;
+  _applyResourceResolutionResults(results, loadToken) {
+    if (loadToken !== this._loadToken || results.length === 0) return;
 
-    this.resources = (this.resources || []).map(item => item.mediaContentId === mediaContentId ? {
-      ...item,
-      pendingAuth: false,
-      resolveError: true
-    } : item);
-  }
-
-  _applyResolvedResourceUrls(resolvedItems, loadToken) {
-    if (loadToken !== this._loadToken || resolvedItems.length === 0) return;
-
-    const resolvedUrlById = new Map(resolvedItems.map(item => [item.mediaContentId, item.url]));
+    const resultsById = new Map(results.map(item => [item.mediaContentId, item]));
 
     this.resources = (this.resources || []).map(item => {
-      const url = resolvedUrlById.get(item.mediaContentId);
+      const result = resultsById.get(item.mediaContentId);
 
-      if (!url) return item;
+      if (!result) return item;
+      if (result.error) {
+        return {
+          ...item,
+          pendingAuth: false,
+          resolveError: true
+        };
+      }
 
       return {
         ...item,
-        url,
+        url: result.url,
         pendingAuth: false,
         resolveError: false
       };
     });
 
-    this._loadImageForPopup();
+    if (results.some(result => !result.error)) this._loadImageForPopup();
   }
 
   _folderDateFormatter(folderFormat, date) {
     return dayjs(date).format(folderFormat);
+  }
+
+  _getDateSearchFolderNames(folderFormat, includeAdjacentDateFolders) {
+    const adjacentDays = includeAdjacentDateFolders ? this.config.date_search_adjacent_days : 0;
+    const selectedDate = dayjs(this.selectedDate);
+    const folderNames = new Set();
+
+    for (let offset = -adjacentDays; offset <= adjacentDays; offset++) {
+      folderNames.add(selectedDate.add(offset, "day").format(folderFormat));
+    }
+
+    return folderNames;
+  }
+
+  _filterResourcesForSelectedDate(resources) {
+    const selectedDate = dayjs(this.selectedDate).format("YYYY-MM-DD");
+
+    return resources.filter(resource => {
+      if (!resource.dateFilterable) return true;
+      if (!resource.date || !dayjs(resource.date).isValid()) return false;
+      return dayjs(resource.date).format("YYYY-MM-DD") === selectedDate;
+    });
   }
 
   _formatDateForInput(date) {

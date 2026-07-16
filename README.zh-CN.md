@@ -15,7 +15,7 @@
 - 大图/视频预览区，缩略图列表可显示在右侧、左侧、顶部、底部，也可隐藏或使用响应式布局。
 - 支持图片、视频、Home Assistant 相机实体、`media-source://` 路径和文件列表传感器属性。
 - 预览区和缩略图列表都有加载中与空状态。
-- 缩略图懒加载，仅解析当前可见页面所需的媒体 URL。
+- 缩略图懒加载，仅在缩略图进入滚动视口时解析对应媒体 URL。
 - 支持日期筛选，可配合文件夹或文件名日期解析。
 - 支持触摸滑动、键盘方向键导航，移动端会显示上一张/下一张按钮。
 - 列表工具栏支持显示标题和手动刷新按钮。
@@ -49,7 +49,9 @@ menu_alignment: right
 items_per_page: 12
 maximum_files: 100
 enable_date_search: true
+folder_format: YYYYMMDD
 search_date_folder_format: YYYYMMDD
+date_search_adjacent_days: 1
 file_name_format: YYYYMMDDHHmmss
 caption_format: MM/DD HH:mm
 show_reload: true
@@ -145,6 +147,7 @@ entities:
 |------|------|--------|------|
 | `enable_date_search` | boolean | `false` | 显示日期选择器，并按所选日期筛选。 |
 | `search_date_folder_format` | string | `DD_MM_YYYY` | 递归筛选日期文件夹时使用的文件夹名称格式。 |
+| `date_search_adjacent_days` | number | `1` | 同时检查所选日期前后最多几天的目录，再按文件名日期精确筛选。需配置 `file_name_format`，范围为 `0`-`7`。 |
 | `folder_format` | string | 无 | 与 `maximum_files` 和倒序排序配合时，可启用最近文件夹定向搜索。 |
 | `file_name_format` | string | 无 | 用于从文件名解析日期的格式。 |
 | `file_name_date_begins` | number/string | 无 | 从文件名第几个字符开始解析日期，按 1 开始计数。 |
@@ -163,9 +166,20 @@ entities:
 | `slideshow_timer` | number/string | 无 | 自动切换预览的秒数间隔。 |
 | `slideshow_video_end` | boolean | `false` | 视频播放结束后是否自动切换到下一项。 |
 
+### 性能
+
+| 名称 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `browse_cache_seconds` | number | `20` | 短时间缓存媒体目录浏览结果；设为 `0` 可关闭。 |
+| `media_cache_size` | number | `500` | LRU 缓存中最多保留的临时媒体 URL 数量。 |
+| `resolve_concurrency` | number | `4` | 每批可见媒体 URL 的并发解析数，超过 `8` 会自动限制。 |
+
 ## 说明
 
-- `media-source://` 条目需要解析 `resolve_media` URL。卡片会优先解析当前可见首屏，之后仅在更多条目变为可见或被选中时继续解析。
+- `media-source://` 条目需要解析 `resolve_media` URL。卡片会优先解析主预览，之后仅在缩略图进入滚动视口或被选中时继续解析。
+- 递归来源配置 `maximum_files` 后，收集到足够数量的排序媒体便会停止遍历，不再展开完整目录树。
+- 如果采集程序把零点后的文件保存在前一天目录中，默认的相邻目录搜索仍会按文件名解析出的实际日期归类。
+- 手动刷新会同时清除目录缓存和临时媒体 URL 缓存。
 - 临时媒体 URL 的缓存时间短于 Home Assistant resolve 过期窗口。
 - 文件列表传感器需要提供 `fileList` 或 `file_list` 属性。
 - 根目录的 `gallery-card.js` 由 `src/gallery-card.js` 构建生成。

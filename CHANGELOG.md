@@ -3,9 +3,11 @@
 ### Improvements
 
 * Resolve media URLs only for visible or selected items instead of processing the full gallery in the background.
+* Stop recursive browsing at the configured media limit, batch visible URL updates, and add bounded directory/URL caches.
 * Add compact title and reload controls, explicit loading/error states, and keyboard-accessible thumbnails.
 * Improve card-width responsive layouts, mobile scrolling, thumbnail sizing, and reduced-motion support.
 * Prevent cross-source configuration leakage, duplicate slideshow timers, and mutations of Home Assistant file-list attributes.
+* Handle timezone-shifted date folders by searching adjacent folders and filtering against the parsed filename date.
 
 ## [1.2.0](https://github.com/lukelalo/gallery-card/compare/v1.1.0...v1.2.0) (2024-04-14)
 

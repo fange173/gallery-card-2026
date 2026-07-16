@@ -15,7 +15,7 @@ This project is a fork adapted for a more gallery-like layout, date filtering, l
 - Large preview area with thumbnail list on the right, left, top, bottom, hidden, or responsive layout.
 - Supports images, videos, Home Assistant camera entities, `media-source://` paths, and file-list sensor attributes.
 - Loading and empty states for the preview and thumbnail list.
-- Lazy thumbnail loading with media URLs resolved only for visible pages.
+- Lazy thumbnail loading with media URLs resolved only when thumbnails enter the scroll viewport.
 - Date filtering with optional folder/date parsing.
 - Touch swipe, keyboard arrow navigation, and mobile-visible previous/next controls.
 - Optional title and manual reload action in the compact list toolbar.
@@ -49,7 +49,9 @@ menu_alignment: right
 items_per_page: 12
 maximum_files: 100
 enable_date_search: true
+folder_format: YYYYMMDD
 search_date_folder_format: YYYYMMDD
+date_search_adjacent_days: 1
 file_name_format: YYYYMMDDHHmmss
 caption_format: MM/DD HH:mm
 show_reload: true
@@ -145,6 +147,7 @@ Old strftime-like tokens such as `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` are converte
 |------|------|---------|-------------|
 | `enable_date_search` | boolean | `false` | Show the date picker and filter by selected date. |
 | `search_date_folder_format` | string | `DD_MM_YYYY` | Folder name format used when recursively filtering date folders. |
+| `date_search_adjacent_days` | number | `1` | Also inspect up to this many folder dates before and after the selected date, then filter exactly by the filename date. Requires `file_name_format`; range: `0`-`7`. |
 | `folder_format` | string | none | Enables targeted recent-folder searching when used with `maximum_files` and reverse sort. |
 | `file_name_format` | string | none | Date format used to parse filenames. |
 | `file_name_date_begins` | number/string | none | 1-based filename position where date parsing starts. |
@@ -163,9 +166,20 @@ Old strftime-like tokens such as `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` are converte
 | `slideshow_timer` | number/string | none | Seconds between automatic preview changes. |
 | `slideshow_video_end` | boolean | `false` | Advance slideshow when a video ends. |
 
+### Performance
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `browse_cache_seconds` | number | `20` | Cache media directory browse results briefly. Set to `0` to disable. |
+| `media_cache_size` | number | `500` | Maximum number of resolved temporary media URLs kept in the LRU cache. |
+| `resolve_concurrency` | number | `4` | Concurrent URL resolutions per visible batch. Values above `8` are capped. |
+
 ## Notes
 
-- `media-source://` items need `resolve_media` URLs. The card resolves the first visible page first, then resolves additional items only when they become visible or selected.
+- `media-source://` items need `resolve_media` URLs. The card resolves the main preview first, then resolves thumbnails only when they enter the scroll viewport or are selected.
+- Recursive sources with `maximum_files` stop traversing once enough sorted media has been collected instead of expanding the complete directory tree.
+- If a recorder stores after-midnight files in the previous day's folder, the default adjacent-folder search still assigns them to the date parsed from their filenames.
+- The manual reload action clears both directory and temporary URL caches.
 - Temporary media URLs are cached for less than the Home Assistant resolve expiration window.
 - File-list sensors are expected to expose `fileList` or `file_list` attributes.
 - The root `gallery-card.js` file is generated from `src/gallery-card.js`.
