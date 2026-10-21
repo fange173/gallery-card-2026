@@ -19,7 +19,9 @@ This project is a fork adapted for a more gallery-like layout, date filtering, l
 - Date filtering with optional folder/date parsing.
 - Touch swipe, keyboard arrow navigation, and mobile-visible previous/next controls.
 - Optional title and manual reload action in the compact list toolbar.
-- Optional slideshow and video playback settings.
+- Optional slideshow and video playback settings; manual navigation restarts the slideshow countdown.
+- Full-screen viewer for images (and videos reached while browsing in it), with swipe and arrow-key navigation.
+- Position counter on the preview and duration badges on video thumbnails.
 - Safe cleanup for keyboard listeners, lazy-load observer, slideshow timer, and temporary media URL cache.
 
 ## Installation
@@ -129,6 +131,14 @@ Supported object fields:
 | `items_per_page` | number | `10` | Initial thumbnail count and increment size for "more". |
 | `show_reload` | boolean | `false` | Show a manual media reload button in the list toolbar. |
 
+On wide cards (600px and up) the card fills the viewport height below the dashboard header. On narrow cards the preview uses a 16:9 frame with the thumbnails in a grid below it. The sizes can be tuned with CSS variables, for example via card-mod:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `--gallery-card-height` | `calc(100dvh - var(--header-height))` | Card height on wide layouts. |
+| `--gallery-card-sidebar-width` | `clamp(220px, 25%, 360px)` | Thumbnail column width for `responsive`, `left`, and `right`. |
+| `--gallery-card-strip-item-width` | `160px` | Thumbnail width in the `top` and `bottom` strips. |
+
 ### Limits And Sorting
 
 | Name | Type | Default | Description |
@@ -162,7 +172,7 @@ Old strftime-like tokens such as `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` are converte
 | `video_muted` | boolean | `false` | Mute videos after metadata loads. |
 | `video_preload` | boolean | `true` | Preload video metadata in thumbnails. |
 | `preview_video_at` | number | `0.1` | Timestamp used for video thumbnail preview metadata. |
-| `show_duration` | boolean | `true` | Keep video duration handling enabled where duration markup exists. |
+| `show_duration` | boolean | `true` | Show the video length on video thumbnails once their metadata has loaded. |
 | `slideshow_timer` | number/string | none | Seconds between automatic preview changes. |
 | `slideshow_video_end` | boolean | `false` | Advance slideshow when a video ends. |
 
@@ -182,6 +192,8 @@ Old strftime-like tokens such as `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` are converte
 - The manual reload action clears both directory and temporary URL caches.
 - Temporary media URLs are cached for less than the Home Assistant resolve expiration window.
 - File-list sensors are expected to expose `fileList` or `file_list` attributes.
+- Media-source items whose titles have no file extension are classified as image or video from the browse metadata.
+- A thumbnail whose temporary URL has expired is re-resolved once before it is shown as failed.
 - The root `gallery-card.js` file is generated from `src/gallery-card.js`.
 
 ## Credits

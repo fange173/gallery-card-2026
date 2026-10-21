@@ -19,7 +19,9 @@
 - 支持日期筛选，可配合文件夹或文件名日期解析。
 - 支持触摸滑动、键盘方向键导航，移动端会显示上一张/下一张按钮。
 - 列表工具栏支持显示标题和手动刷新按钮。
-- 支持可选幻灯片播放和视频播放设置。
+- 支持可选幻灯片播放和视频播放设置；手动切换时会重新开始幻灯片倒计时。
+- 图片支持全屏查看（在全屏中切换到视频时同样可播放），支持滑动和方向键切换。
+- 预览区显示当前位置计数，视频缩略图显示时长。
 - 会清理键盘监听、懒加载观察器、幻灯片定时器和临时媒体 URL 缓存。
 
 ## 安装
@@ -129,6 +131,14 @@ entities:
 | `items_per_page` | number | `10` | 初始缩略图数量，也是点击“更多”时每次增加的数量。 |
 | `show_reload` | boolean | `false` | 在列表工具栏中显示手动刷新按钮。 |
 
+宽卡片（600px 及以上）时，卡片高度会填满仪表盘标题栏以下的视口；窄卡片时，预览区为 16:9，缩略图以网格形式显示在下方。可以通过 CSS 变量（例如 card-mod）调整尺寸：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `--gallery-card-height` | `calc(100dvh - var(--header-height))` | 宽布局下的卡片高度。 |
+| `--gallery-card-sidebar-width` | `clamp(220px, 25%, 360px)` | `responsive`、`left`、`right` 布局的缩略图栏宽度。 |
+| `--gallery-card-strip-item-width` | `160px` | `top`、`bottom` 横向缩略图条中每个缩略图的宽度。 |
+
 ### 数量限制与排序
 
 | 名称 | 类型 | 默认值 | 说明 |
@@ -162,7 +172,7 @@ entities:
 | `video_muted` | boolean | `false` | 视频元数据加载后是否静音。 |
 | `video_preload` | boolean | `true` | 缩略图中是否预加载视频 metadata。 |
 | `preview_video_at` | number | `0.1` | 视频缩略图 metadata 使用的时间点。 |
-| `show_duration` | boolean | `true` | 保留视频时长处理逻辑，适用于存在时长标记的场景。 |
+| `show_duration` | boolean | `true` | 视频元数据加载后，在视频缩略图上显示时长。 |
 | `slideshow_timer` | number/string | 无 | 自动切换预览的秒数间隔。 |
 | `slideshow_video_end` | boolean | `false` | 视频播放结束后是否自动切换到下一项。 |
 
@@ -182,6 +192,8 @@ entities:
 - 手动刷新会同时清除目录缓存和临时媒体 URL 缓存。
 - 临时媒体 URL 的缓存时间短于 Home Assistant resolve 过期窗口。
 - 文件列表传感器需要提供 `fileList` 或 `file_list` 属性。
+- 如果媒体源条目的标题不含扩展名，会根据浏览元数据判断是图片还是视频。
+- 缩略图的临时 URL 过期时，会先重新解析一次，仍失败才显示加载失败。
 - 根目录的 `gallery-card.js` 由 `src/gallery-card.js` 构建生成。
 
 ## Credits

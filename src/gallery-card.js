@@ -1,4 +1,5 @@
 import { LitElement, html, css } from "lit-element";
+import { repeat } from "lit-html/directives/repeat.js";
 import dayjs from "dayjs";
 import customParseFormat from "dayjs/plugin/customParseFormat";
 import relativeTime from "dayjs/plugin/relativeTime";
@@ -11,8 +12,9 @@ dayjs.extend(relativeTime);
 
 class GalleryCard extends LitElement {
   static get properties() {
+    // hass is intentionally not reactive: HA sets it on every state change, and only camera
+    // thumbnails depend on it, so `set hass` requests an update only when those cameras change.
     return {
-      _hass: {},
       config: {},
       resources: { type: Array },
       currentResourceIndex: { type: Number },
@@ -20,6 +22,7 @@ class GalleryCard extends LitElement {
       _itemsToShow: { type: Number },
       _isDateFiltered: { type: Boolean },
       _isLoading: { type: Boolean },
+      _isModalOpen: { type: Boolean },
       _previewErrorIndex: { type: Number },
       errors: { type: Array }
     };
@@ -32,12 +35,15 @@ class GalleryCard extends LitElement {
     this._itemsToShow = 10;
     this.selectedDate = null;
     this._isDateFiltered = false;
-    this._isInitialLoad = false;
     this._isLoading = false;
+    this._isModalOpen = false;
     this._previewErrorIndex = undefined;
     this.errors = [];
     this._hasKeyNavigationListener = false;
     this._keyNavigationHandler = event => this._keyNavigation(event);
+    // touchstart only records the start point, so it can be passive; touchmove may cancel scrolling.
+    this._touchStartListener = { handleEvent: event => this._handleTouchStart(event), passive: true };
+    this._touchMoveListener = event => this._handleTouchMove(event);
     this._mediaResolveCache = new Map();
     this._mediaResolveInflight = new Map();
     this._queuedResolveIds = new Map();
@@ -48,6 +54,7 @@ class GalleryCard extends LitElement {
     this._loadToken = 0;
     this._pendingLoadRequested = false;
     this._slideshowTimer = undefined;
+    this._cameraEntityIds = [];
   }
 
   render() {
@@ -57,19 +64,22 @@ class GalleryCard extends LitElement {
     const resources = this.resources || [];
     const hasResources = resources.length > 0;
     const hasErrors = this.errors.length > 0;
-    const showToolbar = Boolean(this.config.title || this.config.enable_date_search || this.config.show_reload || hasErrors);
+    const showToolbar = Boolean(this.config.title || this.config.enable_date_search || this.config.show_reload);
     const currentResource = hasResources ? this._currentResource() : undefined;
     const previewHasError = currentResource && (currentResource.resolveError || this._previewErrorIndex === this.currentResourceIndex);
     const errorHint = this.config.show_reload ? "媒体加载失败，请点击刷新后重试" : "媒体加载失败，请检查媒体来源";
+    const emptyHint = hasErrors ? errorHint : this._isDateFiltered ? "所选日期没有图片或视频" : "没有可显示的图片或视频";
+    const hasDateSearch = Boolean(this.config.enable_date_search);
+    const toolbarClasses = hasDateSearch ? "card-header-actions has-date" : "card-header-actions";
 
     return html`
       <ha-card class="menu-${menuAlignment}">
-        <div class="resource-viewer" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
+        <div class="resource-viewer" @touchstart=${this._touchStartListener} @touchmove=${this._touchMoveListener}>
           <figure>
             ${this._isLoading ?
         this._renderLoadingState("正在加载媒体...") :
         !hasResources ?
-          this._renderEmptyState(hasErrors ? errorHint : "没有可显示的图片或视频") :
+          this._renderEmptyState(emptyHint) :
         previewHasError ?
           this._renderErrorState(errorHint) :
         currentResource.pendingAuth ?
@@ -80,34 +90,36 @@ class GalleryCard extends LitElement {
                                       .hass=${this._hass}
                                       .cameraImage=${currentResource.name}
                                       .cameraView=${"live"}
+                                      .fitMode=${"contain"}
                                     ></hui-image>
                 ` :
-        this._isImageExtension(currentResource.extension) ?
-          html`<img @click="${event => this._popupImage(event)}" @error="${() => this._handlePreviewError()}" src="${currentResource.url}" alt="${currentResource.caption || currentResource.name}"/>` :
-          html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay} ?muted=${this.config.video_muted} src="${currentResource.url}#t=0.1" @error="${() => this._handlePreviewError()}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}" 
+        this._isImageResource(currentResource) ?
+          html`<img class="preview-image" @click="${() => this._popupImage()}" @error="${() => this._handlePreviewError()}" src="${currentResource.url}" alt="${currentResource.caption || currentResource.name}"/>` :
+          html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay && !this._isModalOpen} .muted=${Boolean(this.config.video_muted)} src="${currentResource.url}#t=0.1" @error="${() => this._handlePreviewError()}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}"
                             @ended="${() => this._videoHasEnded()}" preload="metadata" playsinline webkit-playsinline></video>`
           }
           </figure>
-          ${!this._isLoading && hasResources ? html`<div class="viewer-nav">
+          ${!this._isLoading && resources.length > 1 ? html`<div class="viewer-nav">
             <button type="button" class="nav-icon-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex - 1)}" aria-label="上一个" title="上一个">
               <ha-icon icon="mdi:chevron-left"></ha-icon>
             </button>
             <button type="button" class="nav-icon-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex + 1)}" aria-label="下一个" title="下一个">
               <ha-icon icon="mdi:chevron-right"></ha-icon>
             </button>
-          </div>` : html``}
+          </div>
+          <div class="viewer-counter" aria-hidden="true">${this.currentResourceIndex + 1} / ${resources.length}</div>` : html``}
         </div>
         <div class="resource-menu-container">
           ${showToolbar ? html`
-            <div class="card-header-actions">
-              <div class="header-leading">
-                ${this.config.title ? html`<div class="card-title" title="${this.config.title}">${this.config.title}</div>` : html``}
-              </div>
-              ${this.config.enable_date_search ? html`<div class="date-filter-container">
-                <input type="date" class="date-picker" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
+            <div class="${toolbarClasses}">
+              ${this.config.title ? html`<div class="header-leading">
+                <div class="card-title" title="${this.config.title}">${this.config.title}</div>
+              </div>` : html``}
+              ${hasDateSearch ? html`<div class="date-filter-container">
+                <input type="date" class="date-picker" aria-label="按日期筛选" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
               </div>` : html``}
               <div class="header-trailing">
-                ${this.config.enable_date_search ? html`<button type="button" class="action-text btn-clear-date" @click="${this._clearDateFilter}" style="visibility: ${this._isDateFiltered ? 'visible' : 'hidden'};">清除</button>` : html``}
+                ${hasDateSearch ? html`<button type="button" class="action-text btn-clear-date" @click="${this._clearDateFilter}" style="visibility: ${this._isDateFiltered ? 'visible' : 'hidden'};">清除</button>` : html``}
                 ${this.config.show_reload ? html`<button type="button" class="icon-button btn-reload" @click="${this._reloadResources}" ?disabled=${this._isLoading} aria-label="刷新媒体" title="刷新媒体">
                   <ha-icon icon="mdi:refresh"></ha-icon>
                 </button>` : html``}
@@ -118,48 +130,84 @@ class GalleryCard extends LitElement {
             ${this.errors.map(error => html`<hui-warning>${error}</hui-warning>`)}
           </div>` : html``}
           <div class="resource-menu">
-            ${this._isLoading ? this._renderMenuLoadingState() : !hasResources ? html`<div class="menu-empty">暂无媒体</div>` : resources.slice(0, this._itemsToShow).map((resource, index) => {
-        return html`
-                    <figure id="resource${index}" data-imageIndex="${index}" @click="${() => this._selectResource(index)}" @keydown="${event => this._handleResourceKeydown(event, index)}" class="${(index === this.currentResourceIndex) ? 'selected' : ''}" tabindex="0" role="button" aria-label="${resource.caption || resource.name || `媒体 ${index + 1}`}">
-                    ${resource.pendingAuth ?
-            html`<div class="thumbnail-loading" data-resource-index="${index}">
-                            <div class="skeleton-media"></div>
-                          </div>` :
-          resource.resolveError ?
-            html`<div class="thumbnail-error">
-                            <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
-                            <span>加载失败</span>
-                          </div>` :
-          resource.isHass ?
-            html`
-                          <hui-image
-                            .hass=${this._hass}
-                            .cameraImage=${resource.name}
-                            .cameraView=${"live"}
-                          ></hui-image>
-                        ` :
-            this._isImageExtension(resource.extension) ?
-              html`<img class="lzy_img" data-src="${resource.url}" @load="${event => this._handleThumbnailLoad(event)}" @error="${event => this._handleThumbnailError(event)}" alt="${resource.caption || resource.name}" decoding="async"/>` :
-              (this.config.video_preload ?? true) ?
-                html`<video class="lzy_video" preload="metadata" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at}" @error="${event => this._handleThumbnailError(event)}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" muted playsinline></video>` :
-                html`<div class="video-placeholder"><ha-icon class="play-icon" icon="mdi:movie-play-outline"></ha-icon></div>`
-          }
-                    <figcaption>${resource.caption}</figcaption>
-                    </figure>
-                  `;
-      })}
-            ${this._itemsToShow < resources.length ?
+            ${this._isLoading ? this._renderMenuLoadingState() : !hasResources ? html`<div class="menu-empty">暂无媒体</div>` : repeat(
+        resources.slice(0, this._itemsToShow),
+        // Keyed by position and identity so lazily assigned src values never leak onto another resource.
+        (resource, index) => `${index}:${this._getResourceKey(resource)}`,
+        (resource, index) => this._renderThumbnail(resource, index)
+      )}
+            ${!this._isLoading && this._itemsToShow < resources.length ?
         html`<button type="button" class="load-more" @click="${this._loadMore}">更多 (${resources.length - this._itemsToShow})</button>` :
         html``
       }
           </div>
         </div>
-        <div id="imageModal" class="modal" @click="${this._closeImageModal}" @touchstart="${event => this._handleTouchStart(event)}" @touchmove="${event => this._handleTouchMove(event)}">
+        <dialog class="modal" @click="${this._handleModalClick}" @close="${this._handleModalClosed}" @touchstart=${this._touchStartListener} @touchmove=${this._touchMoveListener}>
           <button type="button" class="modal-close" @click="${this._closeImageModal}" aria-label="关闭预览" title="关闭预览"><ha-icon icon="mdi:close"></ha-icon></button>
-          <img class="modal-content" id="popupImage" @click="${event => event.stopPropagation()}" alt="">
-          <div id="popupCaption"></div>
-        </div>
+          ${this._isModalOpen && currentResource ? this._renderModalContent(currentResource) : html``}
+        </dialog>
       </ha-card>
+    `;
+  }
+
+  _renderThumbnail(resource, index) {
+    const label = resource.caption || resource.name || `媒体 ${index + 1}`;
+    const isSelected = index === this.currentResourceIndex;
+    const isVideo = !resource.isHass && !this._isImageResource(resource);
+    const showDuration = isVideo && (this.config.show_duration ?? true);
+    let media;
+
+    if (resource.pendingAuth) {
+      media = html`<div class="thumbnail-loading" data-resource-index="${index}">
+        <div class="skeleton-media"></div>
+      </div>`;
+    } else if (resource.resolveError || resource.thumbnailError) {
+      media = html`<div class="thumbnail-error">
+        <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
+        <span>加载失败</span>
+      </div>`;
+    } else if (resource.isHass) {
+      media = html`<hui-image
+        .hass=${this._hass}
+        .cameraImage=${resource.name}
+        .cameraView=${"auto"}
+        .fitMode=${"cover"}
+      ></hui-image>`;
+    } else if (!isVideo) {
+      media = html`<img class="lzy_img" data-src="${resource.url}" @error="${() => this._handleThumbnailError(resource)}" alt="${label}" decoding="async" draggable="false"/>`;
+    } else if (this.config.video_preload ?? true) {
+      media = html`<video class="lzy_video" preload="metadata" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at}" @error="${() => this._handleThumbnailError(resource)}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" muted playsinline></video>`;
+    } else {
+      media = html`<div class="video-placeholder"><ha-icon class="play-icon" icon="mdi:movie-play-outline"></ha-icon></div>`;
+    }
+
+    return html`
+      <figure id="resource${index}" @click="${() => this._selectResource(index)}" @keydown="${event => this._handleResourceKeydown(event, index)}" class="${isSelected ? 'selected' : ''}" tabindex="0" role="button" aria-current="${isSelected ? 'true' : 'false'}" aria-label="${label}">
+        ${media}
+        ${showDuration ? html`<span class="duration"></span>` : html``}
+        ${resource.caption ? html`<figcaption>${resource.caption}</figcaption>` : html``}
+      </figure>
+    `;
+  }
+
+  _renderModalContent(resource) {
+    let media;
+
+    if (resource.pendingAuth) {
+      media = this._renderLoadingState("正在加载预览...");
+    } else if (resource.resolveError) {
+      media = this._renderErrorState("媒体加载失败");
+    } else if (resource.isHass) {
+      media = html`<hui-image class="modal-media" .hass=${this._hass} .cameraImage=${resource.name} .cameraView=${"auto"} .fitMode=${"contain"}></hui-image>`;
+    } else if (this._isImageResource(resource)) {
+      media = html`<img class="modal-media" src="${resource.url}" alt="${resource.caption || resource.name}">`;
+    } else {
+      media = html`<video class="modal-media" controls autoplay .muted=${Boolean(this.config.video_muted)} ?loop=${this.config.video_loop} src="${resource.url}" playsinline webkit-playsinline></video>`;
+    }
+
+    return html`
+      ${media}
+      ${resource.caption ? html`<div class="modal-caption">${resource.caption}</div>` : html``}
     `;
   }
 
@@ -204,20 +252,17 @@ class GalleryCard extends LitElement {
   connectedCallback() {
     super.connectedCallback();
     this._createImageObserver();
+    // Dashboards detach and re-attach cards when switching views; restore what disconnectedCallback tore down.
+    if (this.resources !== undefined) this._addKeyNavigationListener();
+    if (this.config) this._doSlideShow(true);
     this.requestUpdate();
   }
 
   updated() {
     this._createImageObserver();
-    const mediaArray = this.shadowRoot.querySelectorAll('img.lzy_img, video.lzy_video, .thumbnail-loading[data-resource-index]');
+    const lazyElements = this.shadowRoot.querySelectorAll("img.lzy_img[data-src], video.lzy_video[data-src], .thumbnail-loading[data-resource-index]");
 
-    for (const v of mediaArray) {
-      if (v.dataset.src) {
-        v.closest("figure")?.classList.remove("media-load-error");
-        this.imageObserver.observe(v);
-      }
-      if (v.dataset.resourceIndex !== undefined) this.imageObserver.observe(v);
-    }
+    for (const element of lazyElements) this.imageObserver.observe(element);
   }
 
   _createImageObserver() {
@@ -293,47 +338,96 @@ class GalleryCard extends LitElement {
     if (this._hass !== undefined)
       this._loadResources(this._hass);
 
-    this._clearSlideshowTimer();
     this._doSlideShow(true);
   }
 
   set hass(hass) {
-    this._hass = hass;
+    const previousHass = this._hass;
 
-    if (this.config && this.resources === undefined)
-      this._loadResources(this._hass);
+    this._hass = hass;
+    if (!this.config) return;
+
+    if (this.resources === undefined)
+      this._loadResources(hass);
+    else if (this._haveCameraStatesChanged(previousHass, hass))
+      this.requestUpdate();
+  }
+
+  get hass() {
+    return this._hass;
+  }
+
+  _haveCameraStatesChanged(previousHass, hass) {
+    return this._cameraEntityIds.some(entityId => previousHass?.states[entityId] !== hass?.states[entityId]);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
     this._removeKeyNavigationListener();
     this._clearSlideshowTimer();
+    this._closeImageModal();
     if (this.imageObserver) {
       this.imageObserver.disconnect();
     }
   }
 
   getCardSize() {
-    return 1;
+    return 12;
+  }
+
+  getGridOptions() {
+    return {
+      columns: "full",
+      min_columns: 6
+    };
+  }
+
+  static getStubConfig() {
+    return {
+      entities: [{ path: "media-source://media_source/local", recursive: true }],
+      menu_alignment: "responsive"
+    };
   }
 
   _isImageExtension(extension) {
-    return typeof extension === "string" && /\.(?:jpeg|jpg|gif|png|tiff|bmp|webp|avif)$/i.test(`.${extension}`);
+    return typeof extension === "string" && /^(?:jpeg|jpg|gif|png|tiff|bmp|webp|avif)$/i.test(extension);
+  }
+
+  _isImageResource(resource) {
+    if (resource?.mediaType) return resource.mediaType === "image";
+    return this._isImageExtension(resource?.extension);
+  }
+
+  _getResourceKey(resource) {
+    return resource?.mediaContentId || resource?.url || "";
+  }
+
+  _patchResource(resource, changes) {
+    const key = this._getResourceKey(resource);
+
+    if (!key || !this.resources) return;
+    this.resources = this.resources.map(item => this._getResourceKey(item) === key ? { ...item, ...changes } : item);
   }
 
   _doSlideShow(firstTime) {
     this._clearSlideshowTimer();
 
-    if (!firstTime)
+    if (!firstTime && !this._isPreviewVideoPlaying())
       this._selectResource(this.currentResourceIndex + 1, true);
 
-    if (this.config.slideshow_timer) {
-      const time = Number.parseInt(this.config.slideshow_timer);
+    const time = Number.parseInt(this.config?.slideshow_timer);
 
-      if (!Number.isNaN(time) && time > 0) {
-        this._slideshowTimer = setTimeout(() => { this._doSlideShow(); }, (time * 1000));
-      }
+    if (this.isConnected && Number.isFinite(time) && time > 0) {
+      this._slideshowTimer = setTimeout(() => { this._doSlideShow(); }, (time * 1000));
     }
+  }
+
+  _isPreviewVideoPlaying() {
+    if (!this.config.slideshow_video_end) return false;
+
+    const video = this.shadowRoot?.querySelector(".resource-viewer video");
+
+    return Boolean(video && !video.paused && !video.ended);
   }
 
   _clearSlideshowTimer() {
@@ -370,56 +464,75 @@ class GalleryCard extends LitElement {
     this._previewErrorIndex = undefined;
     const selectedResource = this.resources[this.currentResourceIndex];
 
-    if (selectedResource.resolveError && selectedResource.mediaContentId) {
+    if ((selectedResource.resolveError || selectedResource.thumbnailError) && selectedResource.mediaContentId) {
       this._mediaResolveCache.delete(selectedResource.mediaContentId);
-      this.resources = this.resources.map((item, itemIndex) => itemIndex === this.currentResourceIndex ? {
-        ...item,
+      this._patchResource(selectedResource, {
         pendingAuth: true,
-        resolveError: false
-      } : item);
+        resolveError: false,
+        thumbnailError: false
+      });
+    } else if (selectedResource.thumbnailError) {
+      // Plain file URLs can't be re-resolved; just let the thumbnail try loading again.
+      this._patchResource(selectedResource, { thumbnailError: false });
     }
     this._resolveResourceUrl(this.resources[this.currentResourceIndex]);
-    this._loadImageForPopup();
 
-    if (fromSlideshow && this.parentNode && this.parentNode.tagName && this.parentNode.tagName.toLowerCase() === "hui-card-preview") {
-      return;
-    }
+    // Manual navigation restarts the countdown so the slideshow doesn't skip right after a user choice.
+    if (!fromSlideshow && this._slideshowTimer) this._doSlideShow(true);
 
-    const elt = this.shadowRoot.querySelector("#resource" + this.currentResourceIndex);
+    const selectedIndex = this.currentResourceIndex;
 
-    if (elt)
-      elt.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+    this.updateComplete.then(() => this._scrollThumbnailIntoView(selectedIndex));
   }
 
-  _getResource(index) {
-    return this.resources !== undefined && index !== undefined && this.resources.length > 0 ? this.resources[index] : {
-      url: "",
-      name: "",
-      extension: "jpg",
-      caption: index === undefined ? "Loading resources..." : "No images or videos to display",
-      index: 0
-    };
+  // Scrolls only the thumbnail list itself; Element.scrollIntoView would also scroll the dashboard,
+  // which on mobile pushes the preview off-screen on every navigation.
+  _scrollThumbnailIntoView(index) {
+    const menu = this.shadowRoot?.querySelector(".resource-menu");
+    const thumbnail = this.shadowRoot?.querySelector(`#resource${index}`);
+
+    if (!menu || !thumbnail || index !== this.currentResourceIndex) return;
+
+    const menuRect = menu.getBoundingClientRect();
+    const thumbnailRect = thumbnail.getBoundingClientRect();
+    const margin = 12;
+    let top = menu.scrollTop;
+    let left = menu.scrollLeft;
+
+    if (menu.scrollHeight > menu.clientHeight) {
+      if (thumbnailRect.top < menuRect.top) top += thumbnailRect.top - menuRect.top - margin;
+      else if (thumbnailRect.bottom > menuRect.bottom) top += thumbnailRect.bottom - menuRect.bottom + margin;
+    }
+    if (menu.scrollWidth > menu.clientWidth) {
+      if (thumbnailRect.left < menuRect.left) left += thumbnailRect.left - menuRect.left - margin;
+      else if (thumbnailRect.right > menuRect.right) left += thumbnailRect.right - menuRect.right + margin;
+    }
+
+    if (top !== menu.scrollTop || left !== menu.scrollLeft)
+      menu.scrollTo({ top, left, behavior: "smooth" });
   }
 
   _currentResource() {
-    return this._getResource(this.currentResourceIndex);
+    return this.resources?.[this.currentResourceIndex];
   }
 
   _startVideo(event) {
-    if (this.autoPlayVideo) {
-      const playRequest = event.target.play();
+    // canplay fires again after every seek or rebuffer; only the first one after a selection may start playback.
+    if (!this.autoPlayVideo) return;
 
-      if (playRequest) playRequest.catch(() => {});
-    }
+    this.autoPlayVideo = false;
+    if (this._isModalOpen) return;
+
+    const playRequest = event.target.play();
+
+    if (playRequest) playRequest.catch(() => {});
   }
 
   _videoMetadataLoaded(event) {
-    event.target.closest("figure")?.classList.remove("media-load-error");
-    const showDuration = this.config.show_duration ?? true;
-    const durationElement = event.target.closest('figure')?.querySelector(".duration");
+    const durationElement = event.target.closest("figure")?.querySelector(".duration");
 
-    if (!Number.isNaN(Number.parseInt(event.target.duration)) && showDuration && durationElement) {
-      durationElement.textContent = "[" + this._getFormattedVideoDuration(event.target.duration) + "]";
+    if (Number.isFinite(event.target.duration) && durationElement) {
+      durationElement.textContent = this._getFormattedVideoDuration(event.target.duration);
     }
 
     if (this.config.video_muted)
@@ -439,21 +552,35 @@ class GalleryCard extends LitElement {
       composed: true
     });
 
-    event.detail = { entityId: this._currentResource().name };
+    event.detail = { entityId: this._currentResource()?.name };
     this.dispatchEvent(event);
   }
 
+  // A modal <dialog> renders in the top layer, so it covers the whole dashboard even when an
+  // ancestor (theme backdrop-filter, transforms, containment) would trap a position: fixed overlay.
   _popupImage() {
-    const modal = this.shadowRoot.querySelector("#imageModal");
+    const modal = this.shadowRoot.querySelector("dialog.modal");
 
-    modal.style.display = "block";
-    this._loadImageForPopup();
+    if (!modal || modal.open) return;
+
+    this._isModalOpen = true;
+    modal.showModal();
   }
 
   _closeImageModal() {
-    const modal = this.shadowRoot.querySelector("#imageModal");
+    const modal = this.shadowRoot?.querySelector("dialog.modal");
 
-    modal.style.display = "none";
+    if (modal?.open) modal.close();
+    this._isModalOpen = false;
+  }
+
+  _handleModalClick(event) {
+    // Clicks on the backdrop area target the dialog itself; clicks on the media do not.
+    if (event.target === event.currentTarget) this._closeImageModal();
+  }
+
+  _handleModalClosed() {
+    this._isModalOpen = false;
   }
 
   _reloadResources() {
@@ -472,48 +599,42 @@ class GalleryCard extends LitElement {
   _handlePreviewError() {
     const resource = this._currentResource();
 
+    if (!resource) return;
     if (resource.mediaContentId && !resource.resolveRetried) {
       this._mediaResolveCache.delete(resource.mediaContentId);
-      this.resources = this.resources.map((item, index) => index === this.currentResourceIndex ? {
-        ...item,
+      this._patchResource(resource, {
         pendingAuth: true,
         resolveError: false,
         resolveRetried: true
-      } : item);
-      this._resolveResourceUrl(this.resources[this.currentResourceIndex]);
+      });
+      this._resolveResourceUrl(this._currentResource());
       return;
     }
 
     this._previewErrorIndex = this.currentResourceIndex;
   }
 
-  _handleThumbnailError(event) {
-    event.currentTarget.closest("figure")?.classList.add("media-load-error");
-  }
+  _handleThumbnailError(resource) {
+    // A thumbnail can outlive its signed URL; re-resolve once before showing the error tile.
+    if (resource.mediaContentId && !resource.thumbnailRetried) {
+      this._mediaResolveCache.delete(resource.mediaContentId);
+      this._patchResource(resource, {
+        pendingAuth: true,
+        thumbnailRetried: true
+      });
+      // Resolve directly: the lazy-load queue may still hold this id until its whole batch finishes.
+      this._resolveResourceUrl({ ...resource, pendingAuth: true });
+      return;
+    }
 
-  _handleThumbnailLoad(event) {
-    event.currentTarget.closest("figure")?.classList.remove("media-load-error");
+    this._patchResource(resource, { thumbnailError: true });
   }
 
   _handleResourceKeydown(event, index) {
-    if (event.code !== "Enter" && event.code !== "Space") return;
+    if (event.key !== "Enter" && event.key !== " ") return;
 
     event.preventDefault();
     this._selectResource(index);
-  }
-
-  _loadImageForPopup() {
-    const modal = this.shadowRoot.querySelector("#imageModal");
-    const modalImg = this.shadowRoot.querySelector("#popupImage");
-    const captionText = this.shadowRoot.querySelector("#popupCaption");
-
-    if (modal.style.display === "block") {
-      if (this._currentResource().pendingAuth) return;
-
-      modalImg.src = this._currentResource().url;
-      modalImg.alt = this._currentResource().caption || this._currentResource().name;
-      captionText.textContent = this._currentResource().caption;
-    }
   }
 
   _getFormattedVideoDuration(duration) {
@@ -533,14 +654,8 @@ class GalleryCard extends LitElement {
   _keyNavigation(event) {
     const eventTarget = event.composedPath()[0];
     const isEditableTarget = eventTarget?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT", "VIDEO"].includes(eventTarget?.tagName);
-    const modal = this.shadowRoot.querySelector("#imageModal");
 
-    if (event.code === "Escape" && modal?.style.display === "block") {
-      this._closeImageModal();
-      return;
-    }
-
-    if (isEditableTarget || (!this.matches(":hover") && !this.shadowRoot.activeElement)) return;
+    if (event.defaultPrevented || isEditableTarget || (!this.matches(":hover") && !this.shadowRoot.activeElement)) return;
 
     switch (event.code) {
       case "ArrowDown":
@@ -639,8 +754,10 @@ class GalleryCard extends LitElement {
     this.resources = [];
     this.errors = [];
     this._previewErrorIndex = undefined;
+    this._itemsToShow = this.config.items_per_page;
+    this._cameraEntityIds = [];
 
-    let filterForDate = (this.config.enable_date_search ?? false) && this._isDateFiltered;
+    const filterForDate = (this.config.enable_date_search ?? false) && this._isDateFiltered;
 
     const configuredMaximumFiles = Number(this.config.maximum_files);
     const maximumFilesRaw = Number.isFinite(configuredMaximumFiles) && configuredMaximumFiles > 0 ? Math.floor(configuredMaximumFiles) : undefined;
@@ -717,78 +834,51 @@ class GalleryCard extends LitElement {
     };
 
     try {
-      let resources = await Promise.all(fetchAll());
+      const resources = await Promise.all(fetchAll());
       let flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
 
       if (filterForDate) flatResources = this._filterResourcesForSelectedDate(flatResources);
 
-      // 自动回溯逻辑
-      if (this._isInitialLoad && filterForDate && flatResources.length === 0) {
-        let daysBack = 0;
-        let tempDate = dayjs(this.selectedDate);
-
-        while (flatResources.length === 0 && daysBack < 30) {
-          daysBack++;
-          tempDate = tempDate.subtract(1, "day");
-          this.selectedDate = tempDate.toDate();
-          resources = await Promise.all(fetchAll());
-          flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
-
-          if (filterForDate) flatResources = this._filterResourcesForSelectedDate(flatResources);
-        }
-
-        // 如果回溯了30天还没找到，则显示全部
-        if (flatResources.length === 0) {
-          this._isDateFiltered = false;
-          filterForDate = false;
-          resources = await Promise.all(fetchAll());
-          flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
-        }
-      }
-      this._isInitialLoad = false;
-
-      this.resources = flatResources;
       if (parsedDateSort) {
-        if (reverseSort) {
-          this.resources.sort(function (x, y) { return y.date - x.date; });
-        } else {
-          this.resources.sort(function (x, y) { return x.date - y.date; });
-        }
+        // Resources without a parseable date have date "" and sort as the oldest.
+        const dateValue = resource => (resource.date ? resource.date.valueOf() : 0);
+        const direction = reverseSort ? -1 : 1;
+
+        flatResources.sort((x, y) => (dateValue(x) - dateValue(y)) * direction);
       }
 
       if (randomSort) {
-        for (let index = this.resources.length - 1; index > 0; index--) {
+        for (let index = flatResources.length - 1; index > 0; index--) {
           const r = Math.floor(Math.random() * (index + 1));
 
           if (index !== r) {
-            [this.resources[index], this.resources[r]] = [this.resources[r], this.resources[index]];
+            [flatResources[index], flatResources[r]] = [flatResources[r], flatResources[index]];
           }
         }
       }
 
-      if (maximumFilesTotal !== undefined && !Number.isNaN(maximumFilesTotal) && maximumFilesTotal < this.resources.length) {
-        this.resources = this.resources.filter(function (resource) {
-          if (resource.isHass)
-            return true;
-          else if (this.count < maximumFilesTotal) {
-            this.count++;
-            return true;
-          }
-          return false;
-        }, { count: this.resources.filter(resource => resource.isHass).length });
+      if (maximumFilesTotal !== undefined && maximumFilesTotal < flatResources.length) {
+        // Cameras are always kept, but they still take up slots of the total limit.
+        let fileCount = flatResources.filter(resource => resource.isHass).length;
+
+        flatResources = flatResources.filter(resource => resource.isHass || fileCount++ < maximumFilesTotal);
       }
 
+      this.resources = flatResources;
+      this._cameraEntityIds = flatResources.filter(resource => resource.isHass).map(resource => resource.name);
       this.currentResourceIndex = 0;
       this._resolveResourceUrl(this.resources[0]);
       this._addKeyNavigationListener();
+      this.updateComplete.then(() => this._scrollThumbnailIntoView(0));
 
       const loadErrors = resources.filter(result => result.error).flat(Number.POSITIVE_INFINITY);
 
       this.errors = loadErrors.map(error => error.message + " " + error.entity);
       for (const error of loadErrors) {
-        this._hass.callService("system_log", "write", {
+        // system_log.write is admin-only; a rejection for other users must not surface as an unhandled error.
+        Promise.resolve(hass.callService("system_log", "write", {
           message: "Gallery Card Error:  " + error.message + "   " + error.entity
-        });
+        })).catch(() => {});
       }
     } catch (error) {
       if (loadToken === this._loadToken) {
@@ -809,7 +899,7 @@ class GalleryCard extends LitElement {
   }
 
   _addKeyNavigationListener() {
-    if (this._hasKeyNavigationListener || (this.parentNode && this.parentNode.tagName && this.parentNode.tagName.toLowerCase() === "hui-card-preview")) {
+    if (this._hasKeyNavigationListener || !this.isConnected || (this.parentNode && this.parentNode.tagName && this.parentNode.tagName.toLowerCase() === "hui-card-preview")) {
       return;
     }
 
@@ -837,11 +927,13 @@ class GalleryCard extends LitElement {
         let date = dayjs();
         let folderPrevious = "";
         const failedPaths = [];
+        const basePath = contentId.replace(/\/+$/, "");
+        let remainingSteps = 2 * 366;  // Never walk back more than a year of (half-day) folder candidates.
 
-        while (values.length < maximumFiles) {
+        while (values.length < maximumFiles && remainingSteps-- > 0) {
           const folder = date.format(folderFormat);
 
-          mediaPath = contentId + "/" + folder;
+          mediaPath = basePath + "/" + folder;
 
           if (folder !== folderPrevious) {
             try {
@@ -1004,7 +1096,7 @@ class GalleryCard extends LitElement {
   }
 
   _shouldIncludeMediaItem(reference, mediaItem, recursive, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders) {
-    if (!mediaItem || mediaItem.title === "@eaDir/") return false;
+    if (!mediaItem || String(mediaItem.title || "").replace(/\/$/, "") === "@eaDir") return false;
     if (mediaItem.media_class === "video") return includeVideo;
     if (mediaItem.media_class === "image") return includeImages;
     if (!recursive || mediaItem.media_class !== "directory") return false;
@@ -1174,10 +1266,10 @@ class GalleryCard extends LitElement {
     let fileCaption = "";
 
     if (fileName !== '@eaDir') {
-      const arFileName = fileName.split(".");
-      const extension = arFileName.at(-1).toLowerCase();
+      const extensionIndex = fileName.lastIndexOf(".");
+      const extension = extensionIndex > 0 ? fileName.slice(extensionIndex + 1).toLowerCase() : "";
 
-      fileName = fileName.slice(0, Math.max(0, fileName.length - extension.length - 1));
+      if (extensionIndex > 0) fileName = fileName.slice(0, extensionIndex);
       try {
         fileName = decodeURIComponent(fileName);
       } catch {
@@ -1191,8 +1283,12 @@ class GalleryCard extends LitElement {
 
       if (fileNameDateBegins && !Number.isNaN(Number.parseInt(fileNameDateBegins)))
         fileDatePart = fileDatePart.slice(Math.max(0, Number.parseInt(fileNameDateBegins) - 1));
-      if (fileNameFormat)
-        date = dayjs(fileDatePart, fileNameFormat);
+      if (fileNameFormat) {
+        const parsedDate = dayjs(fileDatePart, fileNameFormat);
+
+        // An unparseable name keeps its filename caption instead of showing "Invalid Date".
+        if (parsedDate.isValid()) date = parsedDate;
+      }
 
       if (date && captionFormat) {
         if (captionFormat.toUpperCase().trim() === 'AGO')
@@ -1223,10 +1319,17 @@ class GalleryCard extends LitElement {
 
     if (!resource) return undefined;
 
+    // Titles from some media sources carry no extension, so trust the browse metadata for the media type.
+    const contentType = String(mediaItem.media_content_type || "");
+    const mediaType = ["image", "video"].includes(mediaItem.media_class) ?
+      mediaItem.media_class :
+      contentType.startsWith("image/") ? "image" : contentType.startsWith("video/") ? "video" : undefined;
+
     return {
       ...resource,
       url: "",
       mediaContentId: mediaItem.media_content_id,
+      mediaType,
       pendingAuth: true
     };
   }
@@ -1316,15 +1419,10 @@ class GalleryCard extends LitElement {
         ...item,
         url: result.url,
         pendingAuth: false,
-        resolveError: false
+        resolveError: false,
+        thumbnailError: false
       };
     });
-
-    if (results.some(result => !result.error)) this._loadImageForPopup();
-  }
-
-  _folderDateFormatter(folderFormat, date) {
-    return dayjs(date).format(folderFormat);
   }
 
   _getDateSearchFolderNames(folderFormat, includeAdjacentDateFolders) {
@@ -1355,21 +1453,22 @@ class GalleryCard extends LitElement {
   }
 
 
+
+
   static get styles() {
     return css`
       :host {
         --gallery-card-primary-color: var(--primary-color, #03a9f4);
         --gallery-card-text-color: var(--primary-text-color, #212121);
         --gallery-card-bg-color: var(--card-background-color, #fff);
+        --gallery-card-sidebar-width: clamp(220px, 25%, 360px);
+        --gallery-card-strip-item-width: 160px;
         display: block;
-        container-type: inline-size;
-      }
-      .content {
-        overflow: hidden;
+        container: gallery-card / inline-size;
       }
       ha-card {
-        height: 100%;
-        max-height: 100%;
+        /* Override --gallery-card-height (e.g. with card-mod) to fit other dashboard layouts. */
+        height: var(--gallery-card-height, calc(100dvh - var(--header-height, 56px)));
         display: flex;
         flex-direction: column;
         overflow: hidden;
@@ -1377,34 +1476,30 @@ class GalleryCard extends LitElement {
         border-radius: var(--ha-card-border-radius, 12px);
         box-shadow: var(--ha-card-box-shadow, 0 2px 2px 0 rgba(0,0,0,0.14), 0 1px 5px 0 rgba(0,0,0,0.12), 0 3px 1px -2px rgba(0,0,0,0.2));
       }
+
+      /* Preview */
       .resource-viewer {
-        position: sticky;
-        top: var(--header-height, 56px);
-        z-index: 2;
-        width: 100%;
+        position: relative;
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 0;
         background: radial-gradient(circle, #2c2c2c 0%, #111 100%);
         display: flex;
         justify-content: center;
         align-items: center;
         overflow: hidden;
-        align-self: flex-start;
-        height: calc(100dvh - var(--header-height, 56px));
-        max-height: calc(100dvh - var(--header-height, 56px));
       }
       .resource-viewer::after {
         content: "";
         position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
+        inset: 0;
         box-shadow: inset 0 0 80px rgba(0,0,0,0.4);
         pointer-events: none;
       }
       .resource-viewer figure {
         width: 100%;
         height: 100%;
-        margin: 0 !important;
+        margin: 0;
         box-sizing: border-box;
       }
       img, video {
@@ -1413,6 +1508,17 @@ class GalleryCard extends LitElement {
         object-fit: contain;
         display: block;
         transition: opacity 0.3s ease;
+      }
+      hui-image {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+      .preview-image {
+        cursor: zoom-in;
+      }
+      .resource-viewer hui-image {
+        cursor: pointer;
       }
       .loading-state,
       .empty-state {
@@ -1424,6 +1530,7 @@ class GalleryCard extends LitElement {
         align-items: center;
         justify-content: center;
         gap: 12px;
+        padding: 16px;
         color: rgba(255, 255, 255, 0.82);
         text-align: center;
         box-sizing: border-box;
@@ -1448,159 +1555,15 @@ class GalleryCard extends LitElement {
       .error-state ha-icon {
         color: var(--error-color, #db4437);
       }
-      .resource-menu-container {
-        display: flex;
-        flex-direction: column;
-        background: var(--secondary-background-color, #f5f5f5);
-        overflow: hidden;
-        min-height: 0;
-      }
-      .card-header-actions {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-        align-items: center;
-        gap: 8px;
-        padding: 8px 16px;
-        min-height: 48px;
-        box-sizing: border-box;
-        border-bottom: 1px solid var(--divider-color, #e0e0e0);
-        background: var(--gallery-card-bg-color);
-      }
-      @container (max-width: 599px) {
-        .card-header-actions {
-          padding: 6px 12px;
-        }
-      }
-      .action-text {
-        cursor: pointer;
-        color: var(--gallery-card-primary-color);
-        border: 0;
-        background: transparent;
-        font-family: inherit;
-        font-size: 0.9em;
-        font-weight: 500;
-        padding: 4px 8px;
-        border-radius: 4px;
-        transition: background 0.2s;
-        white-space: nowrap;
-      }
-      .action-text:hover {
-        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
-      }
-      .header-leading {
-        grid-column: 1;
-        min-width: 0;
-      }
-      .card-title {
-        color: var(--gallery-card-text-color);
-        font-size: 0.95em;
-        font-weight: 600;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .header-trailing {
-        grid-column: 3;
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
-        gap: 2px;
-      }
-      .icon-button {
-        width: 32px;
-        height: 32px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0;
-        border: 0;
-        border-radius: 50%;
-        background: transparent;
-        color: var(--gallery-card-text-color);
-        cursor: pointer;
-      }
-      .icon-button:hover {
-        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
-        color: var(--gallery-card-primary-color);
-      }
-      .icon-button:disabled {
-        cursor: default;
-        opacity: 0.45;
-      }
-      .btn-clear-date {
-        color: var(--error-color, #db4437);
-      }
-      .date-filter-container {
-        grid-column: 2;
-        display: flex;
-        align-items: center;
-        background: var(--secondary-background-color, #f5f5f5);
-        border-radius: 8px;
-        padding: 4px 10px;
-        border: 1px solid var(--divider-color, #e0e0e0);
-        height: 32px;
-        box-sizing: border-box;
-      }
-      .date-picker {
-        border: none;
-        background: transparent;
-        color: var(--gallery-card-text-color);
-        font-family: inherit;
-        outline: none;
-        font-size: 0.95em;
-        cursor: pointer;
-        text-align: center;
-        height: 24px;
-        line-height: normal;
-      }
-      .error-list {
-        flex: none;
-        max-height: 112px;
-        padding: 8px;
-        overflow-y: auto;
-        box-sizing: border-box;
-        background: var(--gallery-card-bg-color);
-        border-bottom: 1px solid var(--divider-color, #e0e0e0);
-      }
-      figcaption {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        padding: 12px;
-        background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
-        color: #fff;
-        text-align: center;
-        box-sizing: border-box;
-      }
-      .caption-text {
-        font-weight: 500;
-        font-size: 1.1em;
-        margin-bottom: 4px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .caption-details {
-        font-size: 0.9em;
-        opacity: 0.8;
-      }
-      .zoom-link {
-        color: var(--gallery-card-primary-color);
-        text-decoration: none;
-        margin-left: 8px;
-      }
       .viewer-nav {
         position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
+        inset: 0;
         display: flex;
         justify-content: space-between;
         align-items: center;
         padding: 0 10px;
         pointer-events: none;
+        z-index: 1;
       }
       .nav-icon-btn {
         pointer-events: auto;
@@ -1618,6 +1581,7 @@ class GalleryCard extends LitElement {
         opacity: 0;
         transition: opacity 0.2s ease, background 0.2s ease;
         user-select: none;
+        -webkit-tap-highlight-color: transparent;
       }
       .nav-icon-btn ha-icon {
         --mdc-icon-size: 30px;
@@ -1629,6 +1593,172 @@ class GalleryCard extends LitElement {
       .nav-icon-btn:hover {
         background: rgba(0, 0, 0, 0.8);
       }
+      .viewer-counter {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 1;
+        padding: 2px 10px;
+        border-radius: 999px;
+        background: rgba(0, 0, 0, 0.55);
+        color: #fff;
+        font-size: 0.8em;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.6;
+        pointer-events: none;
+      }
+      @media (hover: none) {
+        /* Touch screens have no hover to reveal the arrows. */
+        .nav-icon-btn {
+          opacity: 0.82;
+        }
+      }
+
+      /* Thumbnail list */
+      .resource-menu-container {
+        container: gallery-menu / inline-size;
+        flex: none;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+        min-height: 0;
+        background: var(--secondary-background-color, #f5f5f5);
+        overflow: hidden;
+      }
+      .card-header-actions {
+        flex: none;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+        align-items: center;
+        gap: 8px;
+        padding: 8px 16px;
+        min-height: 48px;
+        box-sizing: border-box;
+        border-bottom: 1px solid var(--divider-color, #e0e0e0);
+        background: var(--gallery-card-bg-color);
+      }
+      .header-leading {
+        grid-column: 1;
+        min-width: 0;
+      }
+      .card-title {
+        color: var(--gallery-card-text-color);
+        font-size: 0.95em;
+        font-weight: 600;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .date-filter-container {
+        grid-column: 2;
+        display: flex;
+        align-items: center;
+        min-width: 0;
+        background: var(--secondary-background-color, #f5f5f5);
+        border-radius: 8px;
+        padding: 4px 10px;
+        border: 1px solid var(--divider-color, #e0e0e0);
+        height: 32px;
+        box-sizing: border-box;
+      }
+      .date-filter-container:focus-within {
+        border-color: var(--gallery-card-primary-color);
+      }
+      .date-picker {
+        min-width: 0;
+        width: 100%;
+        border: none;
+        background: transparent;
+        color: var(--gallery-card-text-color);
+        font-family: inherit;
+        outline: none;
+        font-size: 0.95em;
+        cursor: pointer;
+        text-align: center;
+        height: 24px;
+        line-height: normal;
+      }
+      .header-trailing {
+        grid-column: 3;
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 2px;
+        min-width: 0;
+      }
+      /* Narrow lists: put the title on its own row so the date picker and actions never overlap. */
+      @container gallery-menu (max-width: 339px) {
+        .card-header-actions.has-date {
+          grid-template-columns: minmax(0, 1fr) auto;
+        }
+        .has-date .header-leading {
+          grid-column: 1 / -1;
+        }
+        .has-date .date-filter-container {
+          grid-column: 1;
+        }
+        .has-date .header-trailing {
+          grid-column: 2;
+        }
+      }
+      .action-text {
+        cursor: pointer;
+        color: var(--gallery-card-primary-color);
+        border: 0;
+        background: transparent;
+        font-family: inherit;
+        font-size: 0.9em;
+        font-weight: 500;
+        padding: 4px 8px;
+        border-radius: 4px;
+        transition: background 0.2s;
+        white-space: nowrap;
+      }
+      .btn-clear-date {
+        color: var(--error-color, #db4437);
+      }
+      .icon-button {
+        width: 32px;
+        height: 32px;
+        flex: none;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 0;
+        border-radius: 50%;
+        background: transparent;
+        color: var(--gallery-card-text-color);
+        cursor: pointer;
+      }
+      .icon-button:disabled {
+        cursor: default;
+        opacity: 0.45;
+      }
+      .action-text:hover,
+      .icon-button:hover:not(:disabled),
+      .load-more:hover {
+        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
+      }
+      .icon-button:hover:not(:disabled) {
+        color: var(--gallery-card-primary-color);
+      }
+      .action-text:focus-visible,
+      .icon-button:focus-visible,
+      .load-more:focus-visible,
+      .modal-close:focus-visible {
+        outline: 2px solid var(--gallery-card-primary-color);
+        outline-offset: 1px;
+      }
+      .error-list {
+        flex: none;
+        max-height: 112px;
+        padding: 8px;
+        overflow-y: auto;
+        box-sizing: border-box;
+        background: var(--gallery-card-bg-color);
+        border-bottom: 1px solid var(--divider-color, #e0e0e0);
+      }
       .resource-menu {
         padding: 12px;
         display: grid;
@@ -1636,36 +1766,41 @@ class GalleryCard extends LitElement {
         grid-auto-rows: max-content;
         gap: 12px;
         overflow-y: auto;
-        align-content: flex-start;
+        align-content: start;
         min-height: 0;
         width: 100%;
         box-sizing: border-box;
+        scrollbar-width: thin;
+        scrollbar-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.3) transparent;
       }
       .resource-menu::-webkit-scrollbar {
         width: 4px;
+        height: 4px;
       }
       .resource-menu::-webkit-scrollbar-thumb {
         background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.3);
         border-radius: 4px;
       }
       .resource-menu figure {
-        margin: 0 !important;
+        margin: 0;
         width: 100%;
-        height: auto;
         cursor: pointer;
         border-radius: 8px;
         overflow: hidden;
         background: #222;
         transition: transform 0.2s ease, box-shadow 0.2s ease;
         position: relative;
-        aspect-ratio: 16/9;
+        aspect-ratio: 16 / 9;
         align-self: start;
         box-sizing: border-box;
         box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        -webkit-tap-highlight-color: transparent;
       }
-      .resource-menu figure:hover {
-        transform: translateY(-2px);
-        box-shadow: 0 6px 15px rgba(0,0,0,0.4);
+      @media (hover: hover) {
+        .resource-menu figure:not(.resource-skeleton):hover {
+          transform: translateY(-2px);
+          box-shadow: 0 6px 15px rgba(0,0,0,0.4);
+        }
       }
       .resource-menu figure.selected {
         outline: 2px solid var(--gallery-card-primary-color);
@@ -1677,13 +1812,9 @@ class GalleryCard extends LitElement {
         outline-offset: 2px;
       }
       .resource-skeleton {
-        cursor: default !important;
-        box-shadow: none !important;
-        pointer-events: none;
-      }
-      .resource-skeleton:hover {
-        transform: none;
+        cursor: default;
         box-shadow: none;
+        pointer-events: none;
       }
       .skeleton-media {
         width: 100%;
@@ -1703,6 +1834,7 @@ class GalleryCard extends LitElement {
       }
       .menu-empty {
         grid-column: 1 / -1;
+        flex: 1 1 auto;
         padding: 20px 8px;
         color: var(--secondary-text-color, #727272);
         text-align: center;
@@ -1728,23 +1860,8 @@ class GalleryCard extends LitElement {
       .video-placeholder ha-icon {
         --mdc-icon-size: 28px;
       }
-      .resource-menu figure.media-load-error img,
-      .resource-menu figure.media-load-error video {
-        display: none;
-      }
-      .resource-menu figure.media-load-error::before {
-        content: "加载失败";
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: rgba(255, 255, 255, 0.76);
-        font-size: 0.78em;
-      }
-      .resource-menu img, .resource-menu video {
-        width: 100%;
-        height: 100%;
+      .resource-menu img,
+      .resource-menu video {
         object-fit: cover;
       }
       .resource-menu .lzy_img:not([src]),
@@ -1756,16 +1873,35 @@ class GalleryCard extends LitElement {
         bottom: 0;
         left: 0;
         right: 0;
-        padding: 4px;
+        padding: 4px 6px;
         font-size: 0.7em;
-        background: rgba(0,0,0,0.6);
+        color: #fff;
+        text-align: center;
+        background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+        box-sizing: border-box;
       }
-      @container (min-width: 600px) {
+      .duration {
+        position: absolute;
+        top: 4px;
+        right: 4px;
+        padding: 0 5px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.65);
+        color: #fff;
+        font-size: 0.68em;
+        font-variant-numeric: tabular-nums;
+        line-height: 1.6;
+        pointer-events: none;
+      }
+      .duration:empty {
+        display: none;
+      }
+      @container gallery-card (min-width: 600px) {
         .resource-menu figcaption {
-          font-size: 1.1em;
+          font-size: 0.85em;
         }
       }
       .load-more {
@@ -1782,90 +1918,77 @@ class GalleryCard extends LitElement {
         transition: background 0.2s;
         border-radius: 4px;
       }
-      .load-more:hover {
-        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
-      }
 
-      /* Layout modes */
-      .menu-responsive {
-        flex-direction: column;
+      /* Layout modes (wide cards) */
+      .menu-responsive,
+      .menu-right {
+        flex-direction: row;
       }
-      @container (min-width: 600px) {
-        .menu-responsive,
-        .menu-right,
-        .menu-left {
-          height: calc(100dvh - var(--header-height, 56px));
-          max-height: calc(100dvh - var(--header-height, 56px));
-        }
-        .menu-responsive {
-          flex-direction: row;
-        }
-        .menu-responsive .resource-viewer {
-          flex: 1 1 auto;
-          min-width: 0;
-        }
-        .menu-responsive .resource-menu-container {
-          flex: 0 0 clamp(220px, 25%, 360px);
-          width: clamp(220px, 25%, 360px);
-          height: 100%;
-          max-height: 100%;
-        }
-        .menu-responsive .resource-menu {
-          flex: 1 1 0;
-          grid-template-columns: 1fr;
-        }
+      .menu-left {
+        flex-direction: row-reverse;
       }
-      .menu-bottom .resource-menu-container {
-        order: 2;
+      .menu-top {
+        flex-direction: column-reverse;
       }
+      .menu-responsive .resource-menu-container,
+      .menu-right .resource-menu-container,
+      .menu-left .resource-menu-container {
+        width: var(--gallery-card-sidebar-width);
+      }
+      .menu-responsive .resource-menu,
+      .menu-right .resource-menu,
+      .menu-left .resource-menu {
+        flex: 1 1 0;
+        grid-template-columns: minmax(0, 1fr);
+      }
+      .menu-top .resource-menu,
       .menu-bottom .resource-menu {
-        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
         display: flex;
         overflow-x: auto;
         overflow-y: hidden;
       }
+      .menu-top .resource-menu figure,
       .menu-bottom .resource-menu figure {
-        min-width: 120px;
+        flex: 0 0 var(--gallery-card-strip-item-width);
       }
-      .menu-right { flex-direction: row; }
-      .menu-right .resource-viewer,
-      .menu-left .resource-viewer { flex: 1 1 auto; min-width: 0; }
-      .menu-right .resource-menu-container { width: clamp(220px, 25%, 360px); height: 100%; max-height: 100%; }
-      .menu-right .resource-menu { flex: 1 1 0; grid-template-columns: 1fr; }
-      .menu-left { flex-direction: row-reverse; }
-      .menu-left .resource-menu-container { width: clamp(220px, 25%, 360px); height: 100%; max-height: 100%; }
-      .menu-left .resource-menu { flex: 1 1 0; grid-template-columns: 1fr; }
-      .menu-top { flex-direction: column-reverse; }
-      .menu-top .resource-menu { display: flex; overflow-x: auto; overflow-y: hidden; }
-      .menu-top .resource-menu figure { min-width: 120px; }
-      .menu-hidden .resource-menu-container { display: none; }
+      .menu-top .load-more,
+      .menu-bottom .load-more {
+        flex: none;
+        width: auto;
+        padding: 6px 16px;
+        white-space: nowrap;
+      }
+      .menu-hidden .resource-menu-container {
+        display: none;
+      }
 
-      @container (max-width: 599px) {
-        ha-card {
-          flex-direction: column !important;
+      /* Narrow cards: preview on top with a fixed ratio, thumbnails as a grid below.
+         ha-card[class] outranks the per-mode selectors above without !important. */
+      @container gallery-card (max-width: 599px) {
+        ha-card[class] {
+          flex-direction: column;
           height: auto;
-          max-height: none;
+        }
+        ha-card[class] .resource-viewer {
+          flex: none;
+          width: 100%;
+          aspect-ratio: 16 / 9;
+          max-height: 70dvh;
+        }
+        ha-card[class] .resource-menu-container {
+          width: 100%;
+        }
+        ha-card[class] .resource-menu {
+          display: grid;
+          flex: none;
+          grid-template-columns: repeat(3, minmax(0, 1fr));
           overflow: visible;
         }
-        .resource-viewer {
-          position: relative;
-          top: 0;
-          height: auto;
-          max-height: none;
-          aspect-ratio: 16/9;
-          width: 100% !important;
+        ha-card[class] .load-more {
+          width: 100%;
         }
-        .resource-menu-container {
-          width: 100% !important;
-          height: auto !important;
-          max-height: none !important;
-          overflow: visible;
-        }
-        .resource-menu {
-          grid-template-columns: repeat(3, 1fr) !important;
-          display: grid !important;
-          flex: none !important;
-          overflow-y: visible;
+        .card-header-actions {
+          padding: 6px 12px;
         }
         .nav-icon-btn {
           opacity: 0.82;
@@ -1873,41 +1996,68 @@ class GalleryCard extends LitElement {
           height: 38px;
         }
       }
-
-      @container (max-width: 340px) {
-        .resource-menu {
-          grid-template-columns: repeat(2, 1fr) !important;
+      @container gallery-card (max-width: 340px) {
+        ha-card[class] .resource-menu {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
 
-      /* Modal */
+      /* Full-screen preview */
       .modal {
-        display: none;
-        position: fixed;
-        z-index: 1000;
-        left: 0;
-        top: 0;
+        inset: 0;
         width: 100%;
         height: 100%;
-        background-color: rgba(0,0,0,0.95);
+        max-width: none;
+        max-height: none;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        overflow: hidden;
+        overscroll-behavior: contain;
+        background: rgba(0, 0, 0, 0.95);
+        color: #fff;
+        box-sizing: border-box;
+      }
+      .modal[open] {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 12px;
+        padding: 56px max(16px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+      }
+      .modal::backdrop {
+        background: rgba(0, 0, 0, 0.6);
         backdrop-filter: blur(5px);
       }
-      .modal-content {
-        margin: auto;
-        display: block;
-        max-width: 90%;
-        max-height: 85%;
-        position: absolute;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
+      .modal-media {
+        flex: 0 1 auto;
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        max-height: 100%;
+        min-height: 0;
+        object-fit: contain;
         animation: zoom 0.3s;
+      }
+      hui-image.modal-media {
+        width: 100%;
+        height: 100%;
+      }
+      .modal-caption {
+        flex: none;
+        max-width: 100%;
+        text-align: center;
+        font-size: 1.1em;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
       }
       .modal-close {
         position: absolute;
         z-index: 1;
-        top: max(12px, env(safe-area-inset-top));
-        right: max(12px, env(safe-area-inset-right));
+        top: max(8px, env(safe-area-inset-top));
+        right: max(8px, env(safe-area-inset-right));
         width: 44px;
         height: 44px;
         display: flex;
@@ -1916,24 +2066,19 @@ class GalleryCard extends LitElement {
         padding: 0;
         border: 0;
         border-radius: 50%;
-        background: rgba(0, 0, 0, 0.55);
+        background: rgba(255, 255, 255, 0.12);
         color: #fff;
         cursor: pointer;
+      }
+      .modal-close:hover {
+        background: rgba(255, 255, 255, 0.24);
       }
       .modal-close ha-icon {
         --mdc-icon-size: 28px;
       }
-      #popupCaption {
-        position: absolute;
-        bottom: 20px;
-        width: 100%;
-        text-align: center;
-        color: #fff;
-        font-size: 1.2em;
-      }
       @keyframes zoom {
-        from {transform: translate(-50%, -50%) scale(0.8); opacity: 0;}
-        to {transform: translate(-50%, -50%) scale(1); opacity: 1;}
+        from { transform: scale(0.92); opacity: 0; }
+        to { transform: scale(1); opacity: 1; }
       }
       @keyframes gallery-card-spin {
         to { transform: rotate(360deg); }
@@ -1953,16 +2098,21 @@ class GalleryCard extends LitElement {
     `;
   }
 }
-customElements.define("gallery-card", GalleryCard);
 
-console.groupCollapsed(`%cGALLERY-CARD ${GalleryCardVersion} IS INSTALLED`, "color: green; font-weight: bold");
-console.log("Readme:", "https://github.com/fange173/gallery-card-2026");
-console.groupEnd();
+// Guard against the resource being loaded twice (e.g. listed under two URLs), which would otherwise throw.
+if (!customElements.get("gallery-card")) {
+  customElements.define("gallery-card", GalleryCard);
 
-window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "gallery-card",
-  name: "Gallery Card 2026",
-  preview: false, // Optional - defaults to false
-  description: "Gallery Card 2026 displays images and videos from media sources, file-list sensors, and camera entities." // Optional
-});
+  console.groupCollapsed(`%cGALLERY-CARD ${GalleryCardVersion} IS INSTALLED`, "color: green; font-weight: bold");
+  console.log("Readme:", "https://github.com/fange173/gallery-card-2026");
+  console.groupEnd();
+
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: "gallery-card",
+    name: "Gallery Card 2026",
+    preview: false, // Optional - defaults to false
+    description: "Gallery Card 2026 displays images and videos from media sources, file-list sensors, and camera entities.", // Optional
+    documentationURL: "https://github.com/fange173/gallery-card-2026"
+  });
+}

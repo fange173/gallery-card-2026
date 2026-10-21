@@ -41,6 +41,7 @@
   },
   "dependencies": {
     "dayjs": "^1.11.10",
-    "lit-element": "^3.3.2"
+    "lit-element": "^3.3.2",
+    "lit-html": "^2.8.0"
   }
 }
