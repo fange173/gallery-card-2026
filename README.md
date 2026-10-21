@@ -12,17 +12,17 @@ This project is a fork adapted for a more gallery-like layout, date filtering, l
 
 ## Current Features
 
-- Large preview area with thumbnail list on the right, left, top, bottom, hidden, or responsive layout.
+- Designed as a full dashboard page first (it fills the viewport below the header), and also works as a regular card with `height: auto`.
+- The preview is sized to the media: on wide screens it takes the width the video or image needs at full height, and the timeline gets the rest (more columns on wide screens). Thumbnails use the same ratio, so 4:3 recordings are never cropped or squeezed.
+- An info bar at the top of the timeline (never on top of the picture) shows the title, capture time, relative time ("3 分钟前"), position, and slideshow, download, full-screen, and reload actions.
+- Timeline of thumbnails grouped by day with sticky day headers ("今天 · 10月21日") and per-day counts; dated items are labeled by time.
+- Quick date chips (全部 / 今天 / 昨天 / pick a date) instead of a bare date input.
+- Full-screen viewer for images, videos, and cameras with a thumbnail filmstrip, swipe to navigate, swipe down to close, pinch, wheel, or double-tap zoom, and drag to pan.
+- Thumbnail list on the right, left, top, bottom, hidden, or responsive layout. On phones the preview stays pinned at the top while the timeline scrolls below it.
 - Supports images, videos, Home Assistant camera entities, `media-source://` paths, and file-list sensor attributes.
-- Loading and empty states for the preview and thumbnail list.
-- Lazy thumbnail loading with media URLs resolved only when thumbnails enter the scroll viewport.
-- Date filtering with optional folder/date parsing.
-- Touch swipe, keyboard arrow navigation, and mobile-visible previous/next controls.
-- Optional title and manual reload action in the compact list toolbar.
-- Optional slideshow and video playback settings; manual navigation restarts the slideshow countdown.
-- Full-screen viewer for images (and videos reached while browsing in it), with swipe and arrow-key navigation.
-- Position counter on the preview and duration badges on video thumbnails.
-- Safe cleanup for keyboard listeners, lazy-load observer, slideshow timer, and temporary media URL cache.
+- Lazy thumbnail loading with media URLs resolved only when thumbnails enter view, and more items loaded automatically while scrolling.
+- Video duration badges and a dot on items from the last hour.
+- Touch swipe and keyboard arrow navigation; follows the Home Assistant theme in light and dark mode.
 
 ## Installation
 
@@ -126,18 +126,20 @@ Supported object fields:
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| `title` | string | none | Compact title shown in the list toolbar. |
-| `menu_alignment` | string | `responsive` | `responsive`, `right`, `left`, `bottom`, `top`, or `hidden`. |
-| `items_per_page` | number | `10` | Initial thumbnail count and increment size for "more". |
-| `show_reload` | boolean | `false` | Show a manual media reload button in the list toolbar. |
+| `title` | string | none | Title shown in the info bar. On phones the current item's time takes its place. |
+| `aspect_ratio` | string/number | `auto` | Preview and thumbnail ratio. `auto` uses the first loaded media (at least 1:1, so portrait items are pillarboxed). Set `"4:3"`, `"16:9"`, or a number to fix it and avoid the one-time adjustment after loading. |
+| `height` | string/number | `viewport` | `viewport` fills the screen below the dashboard header (best in a panel view). `auto` sizes to content for use as a regular card. Any CSS length (`600`, `"80vh"`) sets a fixed height. |
+| `menu_alignment` | string | `responsive` | `responsive`, `right`, `left`, `bottom`, `top`, or `hidden`. `top` and `bottom` show a horizontal filmstrip. Narrow cards always stack the preview above the timeline. |
+| `items_per_page` | number | `10` | Thumbnails loaded per page; more load automatically while scrolling. |
+| `show_reload` | boolean | `false` | Show a manual media reload button in the info bar. |
 
-On wide cards (600px and up) the card fills the viewport height below the dashboard header. On narrow cards the preview uses a 16:9 frame with the thumbnails in a grid below it. The sizes can be tuned with CSS variables, for example via card-mod:
+The sizes can also be tuned with CSS variables, for example via card-mod:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `--gallery-card-height` | `calc(100dvh - var(--header-height))` | Card height on wide layouts. |
-| `--gallery-card-sidebar-width` | `clamp(220px, 25%, 360px)` | Thumbnail column width for `responsive`, `left`, and `right`. |
-| `--gallery-card-strip-item-width` | `160px` | Thumbnail width in the `top` and `bottom` strips. |
+| `--gallery-card-height` | `calc(100dvh - var(--header-height))` | Card height when `height` is `viewport`. |
+| `--gallery-card-sidebar-width` | `280px` | Minimum timeline width for `responsive`, `left`, and `right`; the timeline also takes any width the preview doesn't need. |
+| `--gallery-card-strip-item-width` | `150px` | Thumbnail width in the `top` and `bottom` filmstrips. |
 
 ### Limits And Sorting
 
@@ -155,7 +157,7 @@ Old strftime-like tokens such as `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` are converte
 
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
-| `enable_date_search` | boolean | `false` | Show the date picker and filter by selected date. |
+| `enable_date_search` | boolean | `false` | Show the date chips (全部 / 今天 / 昨天 / pick a date) and filter by the selected day. |
 | `search_date_folder_format` | string | `DD_MM_YYYY` | Folder name format used when recursively filtering date folders. |
 | `date_search_adjacent_days` | number | `1` | Also inspect up to this many folder dates before and after the selected date, then filter exactly by the filename date. Requires `file_name_format`; range: `0`-`7`. |
 | `folder_format` | string | none | Enables targeted recent-folder searching when used with `maximum_files` and reverse sort. |
@@ -173,7 +175,7 @@ Old strftime-like tokens such as `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` are converte
 | `video_preload` | boolean | `true` | Preload video metadata in thumbnails. |
 | `preview_video_at` | number | `0.1` | Timestamp used for video thumbnail preview metadata. |
 | `show_duration` | boolean | `true` | Show the video length on video thumbnails once their metadata has loaded. |
-| `slideshow_timer` | number/string | none | Seconds between automatic preview changes. |
+| `slideshow_timer` | number/string | none | Seconds between slides; when set, the slideshow starts automatically. The play button in the info bar starts or pauses it at any time (5 seconds when unset). |
 | `slideshow_video_end` | boolean | `false` | Advance slideshow when a video ends. |
 
 ### Performance

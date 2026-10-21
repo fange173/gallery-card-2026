@@ -6,6 +6,7 @@ import relativeTime from "dayjs/plugin/relativeTime";
 
 const GalleryCardVersion = "2026.0.1";
 const ValidMenuAlignments = new Set(["responsive", "right", "left", "bottom", "top", "hidden"]);
+const WeekdayNames = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
 
 dayjs.extend(customParseFormat);
 dayjs.extend(relativeTime);
@@ -23,6 +24,8 @@ class GalleryCard extends LitElement {
       _isDateFiltered: { type: Boolean },
       _isLoading: { type: Boolean },
       _isModalOpen: { type: Boolean },
+      _slideshowRunning: { type: Boolean },
+      _mediaAspect: { type: Number },
       _previewErrorIndex: { type: Number },
       errors: { type: Array }
     };
@@ -37,6 +40,7 @@ class GalleryCard extends LitElement {
     this._isDateFiltered = false;
     this._isLoading = false;
     this._isModalOpen = false;
+    this._slideshowRunning = false;
     this._previewErrorIndex = undefined;
     this.errors = [];
     this._hasKeyNavigationListener = false;
@@ -55,160 +59,311 @@ class GalleryCard extends LitElement {
     this._pendingLoadRequested = false;
     this._slideshowTimer = undefined;
     this._cameraEntityIds = [];
+    this._viewerPointers = new Map();
+    this._viewerGesture = undefined;
+    this._zoom = { scale: 1, x: 0, y: 0 };
+    this._lastViewerTap = 0;
+    this._suppressViewerClickUntil = 0;
   }
 
   render() {
     if (!this.config) return html``;
 
-    const menuAlignment = (this.config.menu_alignment || "responsive").toLowerCase();
     const resources = this.resources || [];
-    const hasResources = resources.length > 0;
-    const hasErrors = this.errors.length > 0;
-    const showToolbar = Boolean(this.config.title || this.config.enable_date_search || this.config.show_reload);
-    const currentResource = hasResources ? this._currentResource() : undefined;
-    const previewHasError = currentResource && (currentResource.resolveError || this._previewErrorIndex === this.currentResourceIndex);
-    const errorHint = this.config.show_reload ? "媒体加载失败，请点击刷新后重试" : "媒体加载失败，请检查媒体来源";
-    const emptyHint = hasErrors ? errorHint : this._isDateFiltered ? "所选日期没有图片或视频" : "没有可显示的图片或视频";
-    const hasDateSearch = Boolean(this.config.enable_date_search);
-    const toolbarClasses = hasDateSearch ? "card-header-actions has-date" : "card-header-actions";
+    const currentResource = resources.length > 0 ? this._currentResource() : undefined;
+    const heightClass = this.config.height === "auto" ? "height-auto" : "height-fill";
+    const mediaAspect = typeof this.config.aspect_ratio === "number" ? this.config.aspect_ratio : this._mediaAspect;
+    const cardStyle = [
+      this.config.height === "auto" || this.config.height === "viewport" ? "" : `--gallery-card-height: ${this.config.height};`,
+      mediaAspect ? `--gallery-media-aspect: ${mediaAspect};` : ""
+    ].join(" ");
+    // The info bar lives in the timeline column so it never covers the picture; without a timeline it sits under the preview.
+    const infoBarInStage = this.config.menu_alignment === "hidden";
 
     return html`
-      <ha-card class="menu-${menuAlignment}">
-        <div class="resource-viewer" @touchstart=${this._touchStartListener} @touchmove=${this._touchMoveListener}>
-          <figure>
-            ${this._isLoading ?
-        this._renderLoadingState("正在加载媒体...") :
-        !hasResources ?
-          this._renderEmptyState(emptyHint) :
-        previewHasError ?
-          this._renderErrorState(errorHint) :
-        currentResource.pendingAuth ?
-          this._renderLoadingState("正在加载预览...") :
-        currentResource.isHass ?
-        html`
-                  <hui-image @click="${event => this._popupCamera(event)}"
-                                      .hass=${this._hass}
-                                      .cameraImage=${currentResource.name}
-                                      .cameraView=${"live"}
-                                      .fitMode=${"contain"}
-                                    ></hui-image>
-                ` :
-        this._isImageResource(currentResource) ?
-          html`<img class="preview-image" @click="${() => this._popupImage()}" @error="${() => this._handlePreviewError()}" src="${currentResource.url}" alt="${currentResource.caption || currentResource.name}"/>` :
-          html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay && !this._isModalOpen} .muted=${Boolean(this.config.video_muted)} src="${currentResource.url}#t=0.1" @error="${() => this._handlePreviewError()}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}"
-                            @ended="${() => this._videoHasEnded()}" preload="metadata" playsinline webkit-playsinline></video>`
-          }
-          </figure>
-          ${!this._isLoading && resources.length > 1 ? html`<div class="viewer-nav">
-            <button type="button" class="nav-icon-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex - 1)}" aria-label="上一个" title="上一个">
-              <ha-icon icon="mdi:chevron-left"></ha-icon>
-            </button>
-            <button type="button" class="nav-icon-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex + 1)}" aria-label="下一个" title="下一个">
-              <ha-icon icon="mdi:chevron-right"></ha-icon>
-            </button>
-          </div>
-          <div class="viewer-counter" aria-hidden="true">${this.currentResourceIndex + 1} / ${resources.length}</div>` : html``}
-        </div>
-        <div class="resource-menu-container">
-          ${showToolbar ? html`
-            <div class="${toolbarClasses}">
-              ${this.config.title ? html`<div class="header-leading">
-                <div class="card-title" title="${this.config.title}">${this.config.title}</div>
-              </div>` : html``}
-              ${hasDateSearch ? html`<div class="date-filter-container">
-                <input type="date" class="date-picker" aria-label="按日期筛选" @change="${this._handleDateChange}" .value="${this._formatDateForInput(this.selectedDate)}">
-              </div>` : html``}
-              <div class="header-trailing">
-                ${hasDateSearch ? html`<button type="button" class="action-text btn-clear-date" @click="${this._clearDateFilter}" style="visibility: ${this._isDateFiltered ? 'visible' : 'hidden'};">清除</button>` : html``}
-                ${this.config.show_reload ? html`<button type="button" class="icon-button btn-reload" @click="${this._reloadResources}" ?disabled=${this._isLoading} aria-label="刷新媒体" title="刷新媒体">
-                  <ha-icon icon="mdi:refresh"></ha-icon>
-                </button>` : html``}
-              </div>
-            </div>
-          ` : html``}
-          ${hasErrors ? html`<div class="error-list" role="status">
+      <ha-card class="menu-${this.config.menu_alignment} ${heightClass}" style="${cardStyle}">
+        <section class="stage">
+          ${this._renderStage(currentResource)}
+          ${infoBarInStage ? this._renderInfoBar(currentResource) : html``}
+        </section>
+        <aside class="timeline">
+          ${infoBarInStage ? html`` : this._renderInfoBar(currentResource)}
+          ${this._renderDateChips()}
+          ${this.errors.length > 0 ? html`<div class="error-list" role="status">
             ${this.errors.map(error => html`<hui-warning>${error}</hui-warning>`)}
           </div>` : html``}
           <div class="resource-menu">
-            ${this._isLoading ? this._renderMenuLoadingState() : !hasResources ? html`<div class="menu-empty">暂无媒体</div>` : repeat(
-        resources.slice(0, this._itemsToShow),
-        // Keyed by position and identity so lazily assigned src values never leak onto another resource.
-        (resource, index) => `${index}:${this._getResourceKey(resource)}`,
-        (resource, index) => this._renderThumbnail(resource, index)
-      )}
+            ${this._isLoading ? this._renderMenuLoadingState() : resources.length === 0 ? html`<div class="menu-empty">${this._isDateFiltered ? "这一天没有记录" : "暂无媒体"}</div>` : this._renderTimelineItems(resources)}
             ${!this._isLoading && this._itemsToShow < resources.length ?
-        html`<button type="button" class="load-more" @click="${this._loadMore}">更多 (${resources.length - this._itemsToShow})</button>` :
+        html`<button type="button" class="load-more" @click="${this._loadMore}">加载更多（还有 ${resources.length - this._itemsToShow} 项）</button>` :
         html``
       }
           </div>
-        </div>
-        <dialog class="modal" @click="${this._handleModalClick}" @close="${this._handleModalClosed}" @touchstart=${this._touchStartListener} @touchmove=${this._touchMoveListener}>
-          <button type="button" class="modal-close" @click="${this._closeImageModal}" aria-label="关闭预览" title="关闭预览"><ha-icon icon="mdi:close"></ha-icon></button>
-          ${this._isModalOpen && currentResource ? this._renderModalContent(currentResource) : html``}
-        </dialog>
+        </aside>
+        ${this._renderViewer(currentResource)}
       </ha-card>
     `;
   }
 
-  _renderThumbnail(resource, index) {
+  _renderStage(resource) {
+    const resources = this.resources || [];
+    const errorHint = this.config.show_reload ? "媒体加载失败，请点击刷新后重试" : "媒体加载失败，请检查媒体来源";
+    let content;
+
+    if (this._isLoading) {
+      content = this._renderLoadingState("正在加载媒体...");
+    } else if (!resource) {
+      content = this.errors.length > 0 ? this._renderEmptyState(errorHint) :
+        this._isDateFiltered ? this._renderEmptyState("这一天没有记录", html`<button type="button" class="empty-action" @click="${() => this._setDateFilter(null)}">查看全部</button>`) :
+          this._renderEmptyState("还没有图片或视频");
+    } else if (resource.resolveError || this._previewErrorIndex === this.currentResourceIndex) {
+      content = this._renderErrorState(errorHint);
+    } else if (resource.pendingAuth) {
+      content = this._renderLoadingState("正在加载预览...");
+    } else if (resource.isHass) {
+      content = html`<hui-image @click="${() => this._popupCamera()}"
+        .hass=${this._hass}
+        .cameraImage=${resource.name}
+        .cameraView=${"live"}
+        .fitMode=${"contain"}
+      ></hui-image>`;
+    } else if (this._isImageResource(resource)) {
+      content = html`<img class="preview-image" @click="${() => this._openViewer()}" @load="${event => this._updateMediaAspect(event.target.naturalWidth, event.target.naturalHeight)}" @error="${() => this._handlePreviewError()}" src="${resource.url}" alt="${resource.caption || resource.name}"/>`;
+    } else {
+      content = html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay && !this._isModalOpen} .muted=${Boolean(this.config.video_muted)} src="${resource.url}#t=0.1" @error="${() => this._handlePreviewError()}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}"
+        @ended="${() => this._videoHasEnded()}" preload="metadata" playsinline webkit-playsinline></video>`;
+    }
+
+    return html`
+      <div class="resource-viewer" @touchstart=${this._touchStartListener} @touchmove=${this._touchMoveListener}>
+        <figure>${content}</figure>
+        ${!this._isLoading && resources.length > 1 ? html`<div class="viewer-nav">
+          <button type="button" class="nav-icon-btn nav-left" @click="${() => this._selectResource(this.currentResourceIndex - 1)}" aria-label="上一个" title="上一个">
+            <ha-icon icon="mdi:chevron-left"></ha-icon>
+          </button>
+          <button type="button" class="nav-icon-btn nav-right" @click="${() => this._selectResource(this.currentResourceIndex + 1)}" aria-label="下一个" title="下一个">
+            <ha-icon icon="mdi:chevron-right"></ha-icon>
+          </button>
+        </div>` : html``}
+      </div>
+    `;
+  }
+
+  _renderInfoBar(resource) {
+    const total = (this.resources || []).length;
+    const hasMedia = !this._isLoading && Boolean(resource);
+    const caption = hasMedia ? this._getResourceTitle(resource) : "";
+    const relativeTime = hasMedia && resource.date ? this._formatRelativeTime(resource.date) : "";
+
+    return html`
+      <div class="info-bar">
+        <div class="info-text ${caption ? "has-caption" : ""}">
+          ${this.config.title ? html`<span class="info-title">${this.config.title}</span>` : html``}
+          ${caption ? html`<span class="info-caption">${caption}</span>` : html``}
+          ${relativeTime ? html`<span class="info-relative">${relativeTime}</span>` : html``}
+        </div>
+        <div class="info-actions">
+          ${hasMedia && total > 1 ? html`<span class="info-counter">${this.currentResourceIndex + 1} / ${total}</span>` : html``}
+          ${hasMedia && total > 1 ? html`<button type="button" class="icon-button" @click="${this._toggleSlideshow}" aria-pressed="${this._slideshowRunning ? "true" : "false"}" aria-label="${this._slideshowRunning ? "暂停幻灯片" : "播放幻灯片"}" title="${this._slideshowRunning ? "暂停幻灯片" : "播放幻灯片"}">
+            <ha-icon icon="${this._slideshowRunning ? "mdi:pause" : "mdi:play"}"></ha-icon>
+          </button>` : html``}
+          ${hasMedia ? this._renderDownloadButton(resource) : html``}
+          ${hasMedia ? html`<button type="button" class="icon-button" @click="${() => this._openViewer()}" aria-label="全屏查看" title="全屏查看">
+            <ha-icon icon="mdi:fullscreen"></ha-icon>
+          </button>` : html``}
+          ${this.config.show_reload ? html`<button type="button" class="icon-button btn-reload" @click="${this._reloadResources}" ?disabled=${this._isLoading} aria-label="刷新媒体" title="刷新媒体">
+            <ha-icon class="${this._isLoading ? "spinning" : ""}" icon="mdi:refresh"></ha-icon>
+          </button>` : html``}
+        </div>
+      </div>
+    `;
+  }
+
+  _renderDownloadButton(resource) {
+    if (resource.isHass || resource.pendingAuth || !resource.url) return html``;
+
+    const fileName = resource.extension ? `${resource.name}.${resource.extension}` : resource.name;
+
+    return html`<a class="icon-button" href="${resource.url}" download="${fileName}" target="_blank" rel="noopener" aria-label="下载" title="下载">
+      <ha-icon icon="mdi:download"></ha-icon>
+    </a>`;
+  }
+
+  _renderDateChips() {
+    if (!this.config.enable_date_search) return html``;
+
+    const today = dayjs().startOf("day");
+    const selected = this._isDateFiltered && this.selectedDate ? dayjs(this.selectedDate) : undefined;
+    const isToday = Boolean(selected?.isSame(today, "day"));
+    const isYesterday = Boolean(selected?.isSame(today.subtract(1, "day"), "day"));
+    const isCustom = Boolean(selected) && !isToday && !isYesterday;
+    const chip = (label, active, date) => html`<button type="button" class="chip ${active ? "active" : ""}" aria-pressed="${active ? "true" : "false"}" @click="${() => this._setDateFilter(date)}">${label}</button>`;
+
+    return html`
+      <div class="date-chips" role="toolbar" aria-label="按日期筛选">
+        ${chip("全部", !selected, null)}
+        ${chip("今天", isToday, today)}
+        ${chip("昨天", isYesterday, today.subtract(1, "day"))}
+        <label class="chip chip-date ${isCustom ? "active" : ""}">
+          <ha-icon icon="mdi:calendar-month-outline"></ha-icon>
+          <span>${isCustom ? this._formatMonthDay(selected) : "日期"}</span>
+          <input type="date" class="date-picker" aria-label="选择日期" .value="${this._formatDateForInput(this.selectedDate)}" @click="${this._openDatePicker}" @change="${this._handleDateChange}">
+        </label>
+      </div>
+    `;
+  }
+
+  _renderTimelineItems(resources) {
+    const visibleResources = resources.slice(0, this._itemsToShow);
+    // Random order would scatter days into many tiny groups, so only group a dated, ordered list.
+    const groupByDay = !(this.config.random_sort ?? false) && visibleResources.some(resource => resource.date);
+    const dayCounts = groupByDay ? this._countResourcesByDay(resources) : undefined;
+    const items = [];
+    let previousGroup;
+
+    visibleResources.forEach((resource, index) => {
+      if (groupByDay) {
+        const group = this._getDayGroupKey(resource);
+
+        if (group !== previousGroup) {
+          items.push({ key: `day:${index}:${group}`, group, resource });
+          previousGroup = group;
+        }
+      }
+      // Keyed by position and identity so lazily assigned src values never leak onto another resource.
+      items.push({ key: `${index}:${this._getResourceKey(resource)}`, resource, index });
+    });
+
+    return repeat(items, item => item.key, item => item.group ?
+      this._renderDayHeader(item.group, item.resource, dayCounts) :
+      this._renderThumbnail(item.resource, item.index, groupByDay));
+  }
+
+  _renderDayHeader(group, resource, dayCounts) {
+    const [name, date] = group === "camera" ? ["摄像头", ""] : group === "other" ? ["其他", ""] : this._getDayLabelParts(resource.date);
+
+    return html`
+      <div class="day-header">
+        <span class="day-label"><span class="day-name">${name}</span>${date ? html`<span class="day-date">${date}</span>` : html``}</span>
+        <span class="day-count">${dayCounts.get(group)}</span>
+      </div>
+    `;
+  }
+
+  _renderThumbnail(resource, index, groupByDay) {
     const label = resource.caption || resource.name || `媒体 ${index + 1}`;
     const isSelected = index === this.currentResourceIndex;
     const isVideo = !resource.isHass && !this._isImageResource(resource);
     const showDuration = isVideo && (this.config.show_duration ?? true);
-    let media;
+    const minutesAgo = resource.date ? dayjs().diff(resource.date, "minute") : -1;
+    // Day headers already carry the date, so grouped items only need their time.
+    const thumbnailLabel = this.config.caption_format === " " ? "" :
+      groupByDay && resource.date && !resource.isHass ? resource.date.format("HH:mm") : resource.caption;
+
+    return html`
+      <figure id="resource${index}" class="thumb ${isSelected ? "selected" : ""}" @click="${() => this._selectResource(index)}" @keydown="${event => this._handleResourceKeydown(event, index)}" tabindex="0" role="button" aria-current="${isSelected ? "true" : "false"}" aria-label="${label}" title="${label}">
+        <div class="thumb-media">
+          ${this._renderThumbnailMedia(resource, index)}
+          ${isVideo ? html`<span class="video-badge"><ha-icon icon="mdi:play"></ha-icon>${showDuration ? html`<span class="duration"></span>` : html``}</span>` : html``}
+          ${minutesAgo >= 0 && minutesAgo < 60 ? html`<span class="new-dot" title="一小时内的新记录"></span>` : html``}
+        </div>
+        ${thumbnailLabel ? html`<figcaption>${thumbnailLabel}</figcaption>` : html``}
+      </figure>
+    `;
+  }
+
+  _renderThumbnailMedia(resource, index) {
+    const isVideo = !resource.isHass && !this._isImageResource(resource);
 
     if (resource.pendingAuth) {
-      media = html`<div class="thumbnail-loading" data-resource-index="${index}">
+      return html`<div class="thumbnail-loading" data-resource-index="${index}">
         <div class="skeleton-media"></div>
       </div>`;
-    } else if (resource.resolveError || resource.thumbnailError) {
-      media = html`<div class="thumbnail-error">
+    }
+    if (resource.resolveError || resource.thumbnailError) {
+      return html`<div class="thumbnail-error">
         <ha-icon icon="mdi:alert-circle-outline"></ha-icon>
         <span>加载失败</span>
       </div>`;
-    } else if (resource.isHass) {
-      media = html`<hui-image
+    }
+    if (resource.isHass) {
+      return html`<hui-image
         .hass=${this._hass}
         .cameraImage=${resource.name}
         .cameraView=${"auto"}
         .fitMode=${"cover"}
       ></hui-image>`;
-    } else if (!isVideo) {
-      media = html`<img class="lzy_img" data-src="${resource.url}" @error="${() => this._handleThumbnailError(resource)}" alt="${label}" decoding="async" draggable="false"/>`;
-    } else if (this.config.video_preload ?? true) {
-      media = html`<video class="lzy_video" preload="metadata" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at}" @error="${() => this._handleThumbnailError(resource)}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" muted playsinline></video>`;
-    } else {
-      media = html`<div class="video-placeholder"><ha-icon class="play-icon" icon="mdi:movie-play-outline"></ha-icon></div>`;
     }
+    if (!isVideo) {
+      return html`<img class="lzy_img" data-src="${resource.url}" @error="${() => this._handleThumbnailError(resource)}" alt="" decoding="async" draggable="false"/>`;
+    }
+    if (this.config.video_preload ?? true) {
+      return html`<video class="lzy_video" preload="metadata" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at}" @error="${() => this._handleThumbnailError(resource)}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" muted playsinline></video>`;
+    }
+    return html`<div class="video-placeholder"><ha-icon icon="mdi:movie-play-outline"></ha-icon></div>`;
+  }
+
+  _renderViewer(resource) {
+    const resources = this.resources || [];
+    const showContent = this._isModalOpen && resource;
+    const relativeTime = showContent && resource.date ? this._formatRelativeTime(resource.date) : "";
 
     return html`
-      <figure id="resource${index}" @click="${() => this._selectResource(index)}" @keydown="${event => this._handleResourceKeydown(event, index)}" class="${isSelected ? 'selected' : ''}" tabindex="0" role="button" aria-current="${isSelected ? 'true' : 'false'}" aria-label="${label}">
-        ${media}
-        ${showDuration ? html`<span class="duration"></span>` : html``}
-        ${resource.caption ? html`<figcaption>${resource.caption}</figcaption>` : html``}
-      </figure>
+      <dialog class="viewer" @close="${this._handleModalClosed}" @cancel="${this._handleModalClosed}">
+        ${showContent ? html`
+          <div class="viewer-top">
+            <button type="button" class="icon-button" @click="${this._closeViewer}" aria-label="关闭" title="关闭"><ha-icon icon="mdi:close"></ha-icon></button>
+            <div class="viewer-title">
+              <span class="info-caption">${this._getResourceTitle(resource)}</span>
+              ${relativeTime ? html`<span class="info-relative">${relativeTime}</span>` : html``}
+            </div>
+            ${resources.length > 1 ? html`<span class="info-counter">${this.currentResourceIndex + 1} / ${resources.length}</span>` : html``}
+            ${this._renderDownloadButton(resource)}
+          </div>
+          <div class="viewer-stage"
+            @pointerdown="${this._handleViewerPointerDown}"
+            @pointermove="${this._handleViewerPointerMove}"
+            @pointerup="${this._handleViewerPointerUp}"
+            @pointercancel="${this._handleViewerPointerUp}"
+            @wheel="${this._handleViewerWheel}"
+            @click="${this._handleViewerStageClick}">
+            <div class="zoom-layer">${this._renderViewerMedia(resource)}</div>
+            ${resources.length > 1 ? html`<div class="viewer-nav">
+              <button type="button" class="nav-icon-btn" @click="${() => this._selectResource(this.currentResourceIndex - 1)}" aria-label="上一个" title="上一个"><ha-icon icon="mdi:chevron-left"></ha-icon></button>
+              <button type="button" class="nav-icon-btn" @click="${() => this._selectResource(this.currentResourceIndex + 1)}" aria-label="下一个" title="下一个"><ha-icon icon="mdi:chevron-right"></ha-icon></button>
+            </div>` : html``}
+          </div>
+          ${resources.length > 1 ? html`<div class="viewer-strip">${this._renderViewerStrip()}</div>` : html``}
+        ` : html``}
+      </dialog>
     `;
   }
 
-  _renderModalContent(resource) {
-    let media;
-
-    if (resource.pendingAuth) {
-      media = this._renderLoadingState("正在加载预览...");
-    } else if (resource.resolveError) {
-      media = this._renderErrorState("媒体加载失败");
-    } else if (resource.isHass) {
-      media = html`<hui-image class="modal-media" .hass=${this._hass} .cameraImage=${resource.name} .cameraView=${"auto"} .fitMode=${"contain"}></hui-image>`;
-    } else if (this._isImageResource(resource)) {
-      media = html`<img class="modal-media" src="${resource.url}" alt="${resource.caption || resource.name}">`;
-    } else {
-      media = html`<video class="modal-media" controls autoplay .muted=${Boolean(this.config.video_muted)} ?loop=${this.config.video_loop} src="${resource.url}" playsinline webkit-playsinline></video>`;
+  _renderViewerMedia(resource) {
+    if (resource.pendingAuth) return this._renderLoadingState("正在加载...");
+    if (resource.resolveError) return this._renderErrorState("媒体加载失败");
+    if (resource.isHass) {
+      return html`<hui-image class="viewer-media" .hass=${this._hass} .cameraImage=${resource.name} .cameraView=${"auto"} .fitMode=${"contain"}></hui-image>`;
     }
+    if (this._isImageResource(resource)) {
+      return html`<img class="viewer-media" src="${resource.url}" alt="${resource.caption || resource.name}" draggable="false">`;
+    }
+    return html`<video class="viewer-media" controls autoplay .muted=${Boolean(this.config.video_muted)} ?loop=${this.config.video_loop} src="${resource.url}" playsinline webkit-playsinline></video>`;
+  }
 
-    return html`
-      ${media}
-      ${resource.caption ? html`<div class="modal-caption">${resource.caption}</div>` : html``}
-    `;
+  _renderViewerStrip() {
+    const resources = this.resources || [];
+    const current = this.currentResourceIndex;
+    // Only a window around the current item: the strip must stay light for galleries with thousands of items.
+    const indexes = [];
+
+    for (let index = Math.max(0, current - 15); index < Math.min(resources.length, current + 16); index++) indexes.push(index);
+
+    return repeat(indexes, index => `${index}:${this._getResourceKey(resources[index])}`, index => html`
+      <button type="button" id="strip${index}" class="strip-item ${index === current ? "selected" : ""}" @click="${() => this._selectResource(index)}" aria-label="${resources[index].caption || resources[index].name}" aria-current="${index === current ? "true" : "false"}">
+        ${this._renderThumbnailMedia(resources[index], index)}
+      </button>
+    `);
   }
 
   _renderLoadingState(label) {
@@ -220,11 +375,12 @@ class GalleryCard extends LitElement {
     `;
   }
 
-  _renderEmptyState(label) {
+  _renderEmptyState(label, action) {
     return html`
       <div class="empty-state">
         <ha-icon icon="mdi:image-off-outline"></ha-icon>
         <div class="empty-label">${label}</div>
+        ${action || html``}
       </div>
     `;
   }
@@ -242,11 +398,64 @@ class GalleryCard extends LitElement {
     const count = Math.min(this._itemsToShow || 10, 10);
 
     return Array.from({ length: count }, () => html`
-      <figure class="resource-skeleton" aria-hidden="true">
-        <div class="skeleton-media"></div>
+      <figure class="thumb resource-skeleton" aria-hidden="true">
+        <div class="thumb-media"><div class="skeleton-media"></div></div>
         <div class="skeleton-caption"></div>
       </figure>
     `);
+  }
+
+  _getResourceTitle(resource) {
+    if (resource.caption) return resource.caption;
+    if (resource.date) return resource.date.format("M月D日 HH:mm:ss");
+    return resource.name;
+  }
+
+  _getDayGroupKey(resource) {
+    if (resource.isHass) return "camera";
+    return resource.date ? resource.date.format("YYYY-MM-DD") : "other";
+  }
+
+  _countResourcesByDay(resources) {
+    const counts = new Map();
+
+    for (const resource of resources) {
+      const group = this._getDayGroupKey(resource);
+
+      counts.set(group, (counts.get(group) || 0) + 1);
+    }
+    return counts;
+  }
+
+  _formatMonthDay(date) {
+    const day = dayjs(date);
+
+    return day.year() === dayjs().year() ? day.format("M月D日") : day.format("YYYY年M月D日");
+  }
+
+  // [relative day or weekday, month and day], e.g. ["今天", "10月21日"] or ["周日", "10月19日"].
+  _getDayLabelParts(date) {
+    const day = dayjs(date).startOf("day");
+    const daysAgo = dayjs().startOf("day").diff(day, "day");
+    const name = daysAgo === 0 ? "今天" : daysAgo === 1 ? "昨天" : WeekdayNames[day.day()];
+
+    return [name, this._formatMonthDay(day)];
+  }
+
+  _formatRelativeTime(date) {
+    const now = dayjs();
+    const minutes = now.diff(date, "minute");
+
+    if (minutes < 0) return "";
+    if (minutes < 1) return "刚刚";
+    if (minutes < 60) return `${minutes} 分钟前`;
+    if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} 小时前`;
+
+    const days = now.startOf("day").diff(dayjs(date).startOf("day"), "day");
+
+    if (days === 1) return "昨天";
+    if (days < 7) return `${days} 天前`;
+    return "";
   }
 
   connectedCallback() {
@@ -255,6 +464,8 @@ class GalleryCard extends LitElement {
     // Dashboards detach and re-attach cards when switching views; restore what disconnectedCallback tore down.
     if (this.resources !== undefined) this._addKeyNavigationListener();
     if (this.config) this._doSlideShow(true);
+    // Keeps "3 分钟前" labels and new-item dots current while the page stays open.
+    this._clockTimer ??= setInterval(() => this.requestUpdate(), 60 * 1000);
     this.requestUpdate();
   }
 
@@ -263,6 +474,16 @@ class GalleryCard extends LitElement {
     const lazyElements = this.shadowRoot.querySelectorAll("img.lzy_img[data-src], video.lzy_video[data-src], .thumbnail-loading[data-resource-index]");
 
     for (const element of lazyElements) this.imageObserver.observe(element);
+
+    // Re-observing after every update makes the observer report again, so a "load more" button that is
+    // still visible after a page of thumbnails keeps loading until the list fills its scroll area.
+    this._loadMoreObserver ??= new IntersectionObserver(entries => {
+      if (entries.some(entry => entry.isIntersecting)) this._loadMore();
+    });
+    this._loadMoreObserver.disconnect();
+    const loadMoreButton = this.shadowRoot.querySelector(".load-more");
+
+    if (loadMoreButton) this._loadMoreObserver.observe(loadMoreButton);
   }
 
   _createImageObserver() {
@@ -316,6 +537,7 @@ class GalleryCard extends LitElement {
     const mediaCacheSize = Number.parseInt(config.media_cache_size);
     const resolveConcurrency = Number.parseInt(config.resolve_concurrency);
     const dateSearchAdjacentDays = Number.parseInt(config.date_search_adjacent_days);
+    const slideshowSeconds = Number.parseInt(config.slideshow_timer);
     const previousEntities = JSON.stringify(this.config?.entities || []);
     const configWithoutEntity = { ...config };
 
@@ -329,8 +551,12 @@ class GalleryCard extends LitElement {
       browse_cache_seconds: Number.isFinite(browseCacheSeconds) && browseCacheSeconds >= 0 ? browseCacheSeconds : 20,
       media_cache_size: Number.isFinite(mediaCacheSize) && mediaCacheSize > 0 ? mediaCacheSize : 500,
       resolve_concurrency: Number.isFinite(resolveConcurrency) && resolveConcurrency > 0 ? Math.min(resolveConcurrency, 8) : 4,
-      date_search_adjacent_days: Number.isFinite(dateSearchAdjacentDays) && dateSearchAdjacentDays >= 0 ? Math.min(dateSearchAdjacentDays, 7) : 1
+      date_search_adjacent_days: Number.isFinite(dateSearchAdjacentDays) && dateSearchAdjacentDays >= 0 ? Math.min(dateSearchAdjacentDays, 7) : 1,
+      height: this._normalizeHeight(config.height),
+      aspect_ratio: this._normalizeAspectRatio(config.aspect_ratio)
     };
+    this._slideshowRunning = Number.isFinite(slideshowSeconds) && slideshowSeconds > 0;
+    this._mediaAspect = undefined;
     if (previousEntities !== JSON.stringify(entities)) this._clearBrowseCache();
     this._itemsToShow = this.config.items_per_page;
     this._previewErrorIndex = undefined;
@@ -339,6 +565,27 @@ class GalleryCard extends LitElement {
       this._loadResources(this._hass);
 
     this._doSlideShow(true);
+  }
+
+  // "viewport" (default) fills the screen below the header, as a dashboard page; "auto" sizes to content
+  // for use as a regular card; anything else is a CSS length such as 600 or "80vh".
+  _normalizeHeight(height) {
+    if (typeof height === "number" && height > 0) return `${height}px`;
+
+    const value = String(height ?? "").trim();
+
+    if (!value || value.toLowerCase() === "viewport") return "viewport";
+    if (value.toLowerCase() === "auto") return "auto";
+    if (/^\d+(\.\d+)?$/.test(value)) return `${value}px`;
+    return /^[\w\s().%+*/-]+$/.test(value) ? value : "viewport";
+  }
+
+  // "auto" (default) follows the current media; "4:3", "16/9" or a number fixes the preview ratio.
+  _normalizeAspectRatio(aspectRatio) {
+    const match = String(aspectRatio ?? "").trim().match(/^(\d+(?:\.\d+)?)\s*(?:[:/]\s*(\d+(?:\.\d+)?))?$/);
+    const ratio = match ? Number(match[1]) / Number(match[2] || 1) : Number.NaN;
+
+    return Number.isFinite(ratio) && ratio > 0 ? Math.min(Math.max(ratio, 0.5), 2.4) : "auto";
   }
 
   set hass(hass) {
@@ -365,10 +612,11 @@ class GalleryCard extends LitElement {
     super.disconnectedCallback();
     this._removeKeyNavigationListener();
     this._clearSlideshowTimer();
-    this._closeImageModal();
-    if (this.imageObserver) {
-      this.imageObserver.disconnect();
-    }
+    this._closeViewer();
+    clearInterval(this._clockTimer);
+    this._clockTimer = undefined;
+    this.imageObserver?.disconnect();
+    this._loadMoreObserver?.disconnect();
   }
 
   getCardSize() {
@@ -411,15 +659,21 @@ class GalleryCard extends LitElement {
 
   _doSlideShow(firstTime) {
     this._clearSlideshowTimer();
+    if (!this._slideshowRunning) return;
 
     if (!firstTime && !this._isPreviewVideoPlaying())
       this._selectResource(this.currentResourceIndex + 1, true);
 
-    const time = Number.parseInt(this.config?.slideshow_timer);
+    const seconds = Number.parseInt(this.config?.slideshow_timer);
 
-    if (this.isConnected && Number.isFinite(time) && time > 0) {
-      this._slideshowTimer = setTimeout(() => { this._doSlideShow(); }, (time * 1000));
+    if (this.isConnected) {
+      this._slideshowTimer = setTimeout(() => { this._doSlideShow(); }, (Number.isFinite(seconds) && seconds > 0 ? seconds : 5) * 1000);
     }
+  }
+
+  _toggleSlideshow() {
+    this._slideshowRunning = !this._slideshowRunning;
+    this._doSlideShow(true);
   }
 
   _isPreviewVideoPlaying() {
@@ -476,44 +730,72 @@ class GalleryCard extends LitElement {
       this._patchResource(selectedResource, { thumbnailError: false });
     }
     this._resolveResourceUrl(this.resources[this.currentResourceIndex]);
+    // Resolve the neighbours too, so the next arrow press, swipe or slide shows without waiting.
+    this._resolveResourceUrl(this.resources[(nextResourceIndex + 1) % this.resources.length]);
+    this._resolveResourceUrl(this.resources[(nextResourceIndex - 1 + this.resources.length) % this.resources.length]);
 
     // Manual navigation restarts the countdown so the slideshow doesn't skip right after a user choice.
     if (!fromSlideshow && this._slideshowTimer) this._doSlideShow(true);
 
     const selectedIndex = this.currentResourceIndex;
 
-    this.updateComplete.then(() => this._scrollThumbnailIntoView(selectedIndex));
+    this._resetZoom();
+    this.updateComplete.then(() => {
+      this._scrollThumbnailIntoView(selectedIndex);
+      this._scrollStripItemIntoView(selectedIndex);
+    });
   }
 
   // Scrolls only the thumbnail list itself; Element.scrollIntoView would also scroll the dashboard,
   // which on mobile pushes the preview off-screen on every navigation.
   _scrollThumbnailIntoView(index) {
-    const menu = this.shadowRoot?.querySelector(".resource-menu");
-    const thumbnail = this.shadowRoot?.querySelector(`#resource${index}`);
+    if (index !== this.currentResourceIndex) return;
+    this._scrollWithin(this.shadowRoot?.querySelector(".resource-menu"), this.shadowRoot?.querySelector(`#resource${index}`));
+  }
 
-    if (!menu || !thumbnail || index !== this.currentResourceIndex) return;
+  _scrollStripItemIntoView(index) {
+    if (index !== this.currentResourceIndex || !this._isModalOpen) return;
+    this._scrollWithin(this.shadowRoot?.querySelector(".viewer-strip"), this.shadowRoot?.querySelector(`#strip${index}`));
+  }
 
-    const menuRect = menu.getBoundingClientRect();
-    const thumbnailRect = thumbnail.getBoundingClientRect();
+  _scrollWithin(container, element) {
+    if (!container || !element) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const elementRect = element.getBoundingClientRect();
+    // Leave room for the sticky day header (above the item in lists, left of it in filmstrips).
+    const stickyHeader = container.querySelector(".day-header");
     const margin = 12;
-    let top = menu.scrollTop;
-    let left = menu.scrollLeft;
+    const topMargin = (stickyHeader?.offsetHeight ?? 0) + margin;
+    const leftMargin = (stickyHeader?.offsetWidth ?? 0) + margin;
+    let top = container.scrollTop;
+    let left = container.scrollLeft;
 
-    if (menu.scrollHeight > menu.clientHeight) {
-      if (thumbnailRect.top < menuRect.top) top += thumbnailRect.top - menuRect.top - margin;
-      else if (thumbnailRect.bottom > menuRect.bottom) top += thumbnailRect.bottom - menuRect.bottom + margin;
+    if (container.scrollHeight > container.clientHeight) {
+      if (elementRect.top < containerRect.top + topMargin) top += elementRect.top - containerRect.top - topMargin;
+      else if (elementRect.bottom > containerRect.bottom) top += elementRect.bottom - containerRect.bottom + margin;
     }
-    if (menu.scrollWidth > menu.clientWidth) {
-      if (thumbnailRect.left < menuRect.left) left += thumbnailRect.left - menuRect.left - margin;
-      else if (thumbnailRect.right > menuRect.right) left += thumbnailRect.right - menuRect.right + margin;
+    if (container.scrollWidth > container.clientWidth) {
+      if (elementRect.left < containerRect.left + leftMargin) left += elementRect.left - containerRect.left - leftMargin;
+      else if (elementRect.right > containerRect.right) left += elementRect.right - containerRect.right + margin;
     }
 
-    if (top !== menu.scrollTop || left !== menu.scrollLeft)
-      menu.scrollTo({ top, left, behavior: "smooth" });
+    if (top !== container.scrollTop || left !== container.scrollLeft)
+      container.scrollTo({ top, left, behavior: "smooth" });
   }
 
   _currentResource() {
     return this.resources?.[this.currentResourceIndex];
+  }
+
+  // The wide layout sizes the preview to the media (full height, matching width), so the measured ratio
+  // decides how much room the timeline gets. The first measurement wins so a gallery with mixed ratios
+  // doesn't reflow on every item, and it is kept at least square: portrait items are pillarboxed instead
+  // of turning the whole page portrait. A configured aspect_ratio takes precedence.
+  _updateMediaAspect(width, height) {
+    if (this._mediaAspect || !width || !height) return;
+
+    this._mediaAspect = Math.round(Math.min(Math.max(width / height, 1), 2.4) * 1000) / 1000;
   }
 
   _startVideo(event) {
@@ -531,6 +813,9 @@ class GalleryCard extends LitElement {
   _videoMetadataLoaded(event) {
     const durationElement = event.target.closest("figure")?.querySelector(".duration");
 
+    if (event.target.closest(".resource-viewer"))
+      this._updateMediaAspect(event.target.videoWidth, event.target.videoHeight);
+
     if (Number.isFinite(event.target.duration) && durationElement) {
       durationElement.textContent = this._getFormattedVideoDuration(event.target.duration);
     }
@@ -540,10 +825,10 @@ class GalleryCard extends LitElement {
   }
 
   _videoHasEnded() {
-    if (this.config.slideshow_video_end) {
-      this._clearSlideshowTimer();
-      this._doSlideShow();
-    }
+    if (!this.config.slideshow_video_end) return;
+
+    this._selectResource(this.currentResourceIndex + 1, true);
+    this._doSlideShow(true);
   }
 
   _popupCamera() {
@@ -558,29 +843,181 @@ class GalleryCard extends LitElement {
 
   // A modal <dialog> renders in the top layer, so it covers the whole dashboard even when an
   // ancestor (theme backdrop-filter, transforms, containment) would trap a position: fixed overlay.
-  _popupImage() {
-    const modal = this.shadowRoot.querySelector("dialog.modal");
+  _openViewer() {
+    const viewer = this.shadowRoot.querySelector("dialog.viewer");
 
-    if (!modal || modal.open) return;
+    if (!viewer || viewer.open) return;
 
+    this.shadowRoot.querySelector(".resource-viewer video")?.pause();
+    this._resetZoom();
     this._isModalOpen = true;
-    modal.showModal();
+    viewer.showModal();
+    this.updateComplete.then(() => this._scrollStripItemIntoView(this.currentResourceIndex));
   }
 
-  _closeImageModal() {
-    const modal = this.shadowRoot?.querySelector("dialog.modal");
+  _closeViewer() {
+    const viewer = this.shadowRoot?.querySelector("dialog.viewer");
 
-    if (modal?.open) modal.close();
+    if (viewer?.open) viewer.close();
     this._isModalOpen = false;
-  }
-
-  _handleModalClick(event) {
-    // Clicks on the backdrop area target the dialog itself; clicks on the media do not.
-    if (event.target === event.currentTarget) this._closeImageModal();
   }
 
   _handleModalClosed() {
     this._isModalOpen = false;
+  }
+
+  _handleViewerStageClick(event) {
+    // The click that follows a drag, swipe or double tap is part of that gesture, not a tap.
+    if (Date.now() < this._suppressViewerClickUntil) return;
+    // A tap on the empty area around the media closes the viewer.
+    if (event.target === event.currentTarget || event.target.classList.contains("zoom-layer")) this._closeViewer();
+  }
+
+  _handleViewerPointerDown(event) {
+    if ((event.pointerType === "mouse" && event.button !== 0) || event.target.closest("button, video")) return;
+
+    this._viewerPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    try {
+      event.currentTarget.setPointerCapture(event.pointerId);
+    } catch {
+      // Capture is only an optimization for drags that leave the stage.
+    }
+    event.currentTarget.classList.add("gesturing");
+
+    if (this._viewerPointers.size === 1) {
+      this._viewerGesture = { startX: event.clientX, startY: event.clientY, originX: this._zoom.x, originY: this._zoom.y, moved: false };
+    } else if (this._viewerPointers.size === 2) {
+      const [first, second] = [...this._viewerPointers.values()];
+
+      this._viewerGesture = { pinch: true, startDistance: Math.hypot(first.x - second.x, first.y - second.y) || 1, startScale: this._zoom.scale, moved: true };
+    }
+  }
+
+  _handleViewerPointerMove(event) {
+    if (!this._viewerPointers.has(event.pointerId) || !this._viewerGesture) return;
+
+    this._viewerPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const gesture = this._viewerGesture;
+
+    if (gesture.pinch) {
+      if (this._viewerPointers.size < 2) return;
+
+      const [first, second] = [...this._viewerPointers.values()];
+      const distance = Math.hypot(first.x - second.x, first.y - second.y);
+
+      this._setZoom(gesture.startScale * distance / gesture.startDistance);
+      return;
+    }
+
+    const deltaX = event.clientX - gesture.startX;
+    const deltaY = event.clientY - gesture.startY;
+
+    if (Math.abs(deltaX) > 6 || Math.abs(deltaY) > 6) gesture.moved = true;
+    if (this._zoom.scale > 1) {
+      this._zoom.x = gesture.originX + deltaX;
+      this._zoom.y = gesture.originY + deltaY;
+      this._applyZoom();
+    }
+  }
+
+  _handleViewerPointerUp(event) {
+    if (!this._viewerPointers.has(event.pointerId)) return;
+
+    this._viewerPointers.delete(event.pointerId);
+    const gesture = this._viewerGesture;
+
+    if (this._viewerPointers.size > 0) {
+      // One finger lifted after a pinch: continue as a pan from the remaining finger.
+      const [remaining] = [...this._viewerPointers.values()];
+
+      this._viewerGesture = { startX: remaining.x, startY: remaining.y, originX: this._zoom.x, originY: this._zoom.y, moved: true };
+      return;
+    }
+
+    event.currentTarget.classList.remove("gesturing");
+    this._viewerGesture = undefined;
+    if (!gesture) return;
+
+    if (gesture.moved) this._suppressViewerClickUntil = Date.now() + 400;
+    if (gesture.pinch) return;
+
+    const deltaX = event.clientX - gesture.startX;
+    const deltaY = event.clientY - gesture.startY;
+
+    if (!gesture.moved) {
+      // Double tap (or double click) toggles zoom around the tapped point.
+      const now = Date.now();
+
+      if (now - this._lastViewerTap < 300) {
+        this._lastViewerTap = 0;
+        this._suppressViewerClickUntil = Date.now() + 400;
+        this._toggleZoomAt(event.clientX, event.clientY, event.currentTarget);
+      } else {
+        this._lastViewerTap = now;
+      }
+      return;
+    }
+
+    if (this._zoom.scale > 1) return;
+    if (Math.abs(deltaX) > 50 && Math.abs(deltaX) > Math.abs(deltaY))
+      this._selectResource(this.currentResourceIndex + (deltaX < 0 ? 1 : -1));
+    else if (deltaY > 80 && deltaY > Math.abs(deltaX))
+      this._closeViewer();
+  }
+
+  _handleViewerWheel(event) {
+    if (!this._isImageResource(this._currentResource())) return;
+
+    event.preventDefault();
+    this._setZoom(this._zoom.scale * Math.exp(-event.deltaY * 0.0015));
+  }
+
+  _toggleZoomAt(clientX, clientY, stage) {
+    if (!this._isImageResource(this._currentResource())) return;
+    if (this._zoom.scale > 1) {
+      this._resetZoom();
+      return;
+    }
+
+    const rect = stage.getBoundingClientRect();
+    const scale = 2.5;
+
+    this._zoom = {
+      scale,
+      x: (rect.left + rect.width / 2 - clientX) * (scale - 1),
+      y: (rect.top + rect.height / 2 - clientY) * (scale - 1)
+    };
+    this._applyZoom();
+  }
+
+  _setZoom(scale) {
+    const nextScale = Math.min(Math.max(scale, 1), 5);
+
+    if (!this._isImageResource(this._currentResource())) return;
+    // Keep the visible point steady while scaling around the center.
+    const ratio = nextScale / this._zoom.scale;
+
+    this._zoom = { scale: nextScale, x: this._zoom.x * ratio, y: this._zoom.y * ratio };
+    this._applyZoom();
+  }
+
+  _resetZoom() {
+    this._zoom = { scale: 1, x: 0, y: 0 };
+    this._applyZoom();
+  }
+
+  _applyZoom() {
+    const layer = this.shadowRoot?.querySelector(".viewer .zoom-layer");
+
+    if (!layer) return;
+
+    // offsetWidth/Height are the untransformed size; the bounding rect would already include the scale.
+    const maxX = (this._zoom.scale - 1) * layer.offsetWidth / 2;
+    const maxY = (this._zoom.scale - 1) * layer.offsetHeight / 2;
+
+    this._zoom.x = Math.min(Math.max(this._zoom.x, -maxX), maxX);
+    this._zoom.y = Math.min(Math.max(this._zoom.y, -maxY), maxY);
+    layer.style.transform = this._zoom.scale === 1 ? "" : `translate(${this._zoom.x}px, ${this._zoom.y}px) scale(${this._zoom.scale})`;
   }
 
   _reloadResources() {
@@ -638,17 +1075,12 @@ class GalleryCard extends LitElement {
   }
 
   _getFormattedVideoDuration(duration) {
-    let minutes = Number.parseInt(duration / 60);
+    const totalSeconds = Math.floor(duration);
+    const hours = Math.floor(totalSeconds / 3600);
+    const minutes = Math.floor(totalSeconds % 3600 / 60);
+    const seconds = String(totalSeconds % 60).padStart(2, "0");
 
-    if (minutes < 10)
-      minutes = "0" + minutes;
-
-    let seconds = Number.parseInt(duration % 60);
-
-    seconds = "0" + seconds;
-    seconds = seconds.slice(Math.max(0, seconds.length - 2));
-
-    return minutes + ":" + seconds;
+    return hours > 0 ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
   }
 
   _keyNavigation(event) {
@@ -712,18 +1144,21 @@ class GalleryCard extends LitElement {
   }
 
   _handleDateChange(event) {
-    if (event.target.value) {
-      this.selectedDate = dayjs(event.target.value).toDate();
-    } else {
-      this.selectedDate = null;
-    }
-    this._isDateFiltered = this.selectedDate !== null;
-    this._loadResources(this._hass);
+    this._setDateFilter(event.target.value ? dayjs(event.target.value) : null);
   }
 
-  _clearDateFilter() {
-    this.selectedDate = null;
-    this._isDateFiltered = false;
+  _openDatePicker(event) {
+    // Desktop browsers only open the calendar from the tiny icon; open it from anywhere on the chip.
+    try {
+      event.currentTarget.showPicker?.();
+    } catch {
+      // showPicker throws without user activation or in cross-origin frames; the native behavior remains.
+    }
+  }
+
+  _setDateFilter(date) {
+    this.selectedDate = date ? dayjs(date).startOf("day").toDate() : null;
+    this._isDateFiltered = this.selectedDate !== null;
     this._loadResources(this._hass);
   }
 
@@ -1458,56 +1893,71 @@ class GalleryCard extends LitElement {
   static get styles() {
     return css`
       :host {
-        --gallery-card-primary-color: var(--primary-color, #03a9f4);
-        --gallery-card-text-color: var(--primary-text-color, #212121);
-        --gallery-card-bg-color: var(--card-background-color, #fff);
-        --gallery-card-sidebar-width: clamp(220px, 25%, 360px);
-        --gallery-card-strip-item-width: 160px;
+        --gallery-accent: var(--primary-color, #03a9f4);
+        --gallery-accent-rgb: var(--rgb-primary-color, 3, 169, 244);
+        --gallery-text: var(--primary-text-color, #212121);
+        --gallery-text-secondary: var(--secondary-text-color, #727272);
+        --gallery-surface: var(--card-background-color, #fff);
+        --gallery-divider: var(--divider-color, rgba(0, 0, 0, 0.12));
+        --gallery-placeholder: rgba(127, 127, 127, 0.14);
+        --gallery-stage-bg: #0e0e0e;
         display: block;
         container: gallery-card / inline-size;
       }
+
+      /* Card shell. Page mode (default) fills the viewport below the dashboard header and scrolls the
+         timeline internally; .height-auto sizes to content for use as a regular card. */
       ha-card {
-        /* Override --gallery-card-height (e.g. with card-mod) to fit other dashboard layouts. */
         height: var(--gallery-card-height, calc(100dvh - var(--header-height, 56px)));
         display: flex;
         flex-direction: column;
         overflow: hidden;
-        background: var(--gallery-card-bg-color);
+        color: var(--gallery-text);
+        background: var(--gallery-surface);
         border-radius: var(--ha-card-border-radius, 12px);
-        box-shadow: var(--ha-card-box-shadow, 0 2px 2px 0 rgba(0,0,0,0.14), 0 1px 5px 0 rgba(0,0,0,0.12), 0 3px 1px -2px rgba(0,0,0,0.2));
+        box-shadow: var(--ha-card-box-shadow, none);
+        border: var(--ha-card-border-width, 1px) solid var(--ha-card-border-color, var(--gallery-divider));
+        box-sizing: border-box;
+      }
+      ha-card.height-auto {
+        height: auto;
+      }
+      button {
+        font: inherit;
+      }
+      ha-icon {
+        --mdc-icon-size: 22px;
       }
 
-      /* Preview */
-      .resource-viewer {
+      /* Stage: preview plus info bar */
+      .stage {
         position: relative;
         flex: 1 1 auto;
         min-width: 0;
         min-height: 0;
-        background: radial-gradient(circle, #2c2c2c 0%, #111 100%);
         display: flex;
-        justify-content: center;
-        align-items: center;
-        overflow: hidden;
+        flex-direction: column;
+        background: var(--gallery-stage-bg);
       }
-      .resource-viewer::after {
-        content: "";
-        position: absolute;
-        inset: 0;
-        box-shadow: inset 0 0 80px rgba(0,0,0,0.4);
-        pointer-events: none;
+      .resource-viewer {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
       }
       .resource-viewer figure {
         width: 100%;
         height: 100%;
         margin: 0;
-        box-sizing: border-box;
       }
       img, video {
         width: 100%;
         height: 100%;
         object-fit: contain;
         display: block;
-        transition: opacity 0.3s ease;
       }
       hui-image {
         display: block;
@@ -1516,6 +1966,7 @@ class GalleryCard extends LitElement {
       }
       .preview-image {
         cursor: zoom-in;
+        animation: gallery-fade-in 0.25s ease;
       }
       .resource-viewer hui-image {
         cursor: pointer;
@@ -1524,7 +1975,7 @@ class GalleryCard extends LitElement {
       .empty-state {
         width: 100%;
         height: 100%;
-        min-height: 160px;
+        min-height: 140px;
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -1536,24 +1987,34 @@ class GalleryCard extends LitElement {
         box-sizing: border-box;
       }
       .loading-spinner {
-        width: 36px;
-        height: 36px;
-        border: 3px solid rgba(255, 255, 255, 0.24);
-        border-top-color: var(--gallery-card-primary-color);
+        width: 32px;
+        height: 32px;
+        border: 3px solid rgba(255, 255, 255, 0.2);
+        border-top-color: var(--gallery-accent);
         border-radius: 50%;
-        animation: gallery-card-spin 0.8s linear infinite;
+        animation: gallery-spin 0.8s linear infinite;
       }
       .loading-label,
       .empty-label {
-        font-size: 0.95em;
-        font-weight: 500;
+        font-size: 14px;
       }
       .empty-state ha-icon {
-        --mdc-icon-size: 42px;
-        opacity: 0.75;
+        --mdc-icon-size: 40px;
+        opacity: 0.7;
       }
       .error-state ha-icon {
         color: var(--error-color, #db4437);
+      }
+      .empty-action {
+        padding: 6px 16px;
+        border: 1px solid rgba(255, 255, 255, 0.4);
+        border-radius: 999px;
+        background: transparent;
+        color: #fff;
+        cursor: pointer;
+      }
+      .empty-action:hover {
+        background: rgba(255, 255, 255, 0.12);
       }
       .viewer-nav {
         position: absolute;
@@ -1561,9 +2022,8 @@ class GalleryCard extends LitElement {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        padding: 0 10px;
+        padding: 0 12px;
         pointer-events: none;
-        z-index: 1;
       }
       .nav-icon-btn {
         pointer-events: auto;
@@ -1575,151 +2035,104 @@ class GalleryCard extends LitElement {
         padding: 0;
         border: 0;
         border-radius: 50%;
-        background: rgba(0, 0, 0, 0.5);
+        background: rgba(0, 0, 0, 0.45);
         color: #fff;
         cursor: pointer;
         opacity: 0;
         transition: opacity 0.2s ease, background 0.2s ease;
-        user-select: none;
         -webkit-tap-highlight-color: transparent;
       }
       .nav-icon-btn ha-icon {
-        --mdc-icon-size: 30px;
+        --mdc-icon-size: 28px;
       }
       .resource-viewer:hover .nav-icon-btn,
+      .viewer-stage:hover .nav-icon-btn,
       .nav-icon-btn:focus-visible {
         opacity: 1;
       }
       .nav-icon-btn:hover {
-        background: rgba(0, 0, 0, 0.8);
-      }
-      .viewer-counter {
-        position: absolute;
-        top: 10px;
-        right: 10px;
-        z-index: 1;
-        padding: 2px 10px;
-        border-radius: 999px;
-        background: rgba(0, 0, 0, 0.55);
-        color: #fff;
-        font-size: 0.8em;
-        font-variant-numeric: tabular-nums;
-        line-height: 1.6;
-        pointer-events: none;
-      }
-      @media (hover: none) {
-        /* Touch screens have no hover to reveal the arrows. */
-        .nav-icon-btn {
-          opacity: 0.82;
-        }
+        background: rgba(0, 0, 0, 0.7);
       }
 
-      /* Thumbnail list */
-      .resource-menu-container {
-        container: gallery-menu / inline-size;
+      /* Info bar: heads the timeline column (or sits under the preview), never on top of the picture,
+         since camera recordings often burn their timestamp into the top of the frame. */
+      .info-bar {
         flex: none;
         display: flex;
-        flex-direction: column;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 2px 12px;
+        padding: 8px 6px 8px 14px;
+        color: var(--gallery-text);
+        background: var(--gallery-surface);
+        border-bottom: 1px solid var(--gallery-divider);
+      }
+      .stage .info-bar {
+        border-top: 1px solid var(--gallery-divider);
+        border-bottom: 0;
+      }
+      .info-text {
+        flex: 1 1 auto;
         min-width: 0;
-        min-height: 0;
-        background: var(--secondary-background-color, #f5f5f5);
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        white-space: nowrap;
         overflow: hidden;
       }
-      .card-header-actions {
-        flex: none;
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
-        align-items: center;
-        gap: 8px;
-        padding: 8px 16px;
-        min-height: 48px;
-        box-sizing: border-box;
-        border-bottom: 1px solid var(--divider-color, #e0e0e0);
-        background: var(--gallery-card-bg-color);
-      }
-      .header-leading {
-        grid-column: 1;
+      .info-title {
+        flex: 0 1 auto;
         min-width: 0;
-      }
-      .card-title {
-        color: var(--gallery-card-text-color);
-        font-size: 0.95em;
+        font-size: 16px;
         font-weight: 600;
         overflow: hidden;
         text-overflow: ellipsis;
-        white-space: nowrap;
       }
-      .date-filter-container {
-        grid-column: 2;
+      .info-caption {
+        flex: 0 1 auto;
+        min-width: 0;
+        font-size: 15px;
+        font-variant-numeric: tabular-nums;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .info-title + .info-caption {
+        font-size: 14px;
+        color: var(--gallery-text-secondary);
+      }
+      .info-relative {
+        flex: 0 1 auto;
+        min-width: 0;
+        font-size: 13px;
+        color: var(--gallery-text-secondary);
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .info-actions {
+        flex: none;
         display: flex;
         align-items: center;
-        min-width: 0;
-        background: var(--secondary-background-color, #f5f5f5);
-        border-radius: 8px;
-        padding: 4px 10px;
-        border: 1px solid var(--divider-color, #e0e0e0);
-        height: 32px;
-        box-sizing: border-box;
-      }
-      .date-filter-container:focus-within {
-        border-color: var(--gallery-card-primary-color);
-      }
-      .date-picker {
-        min-width: 0;
-        width: 100%;
-        border: none;
-        background: transparent;
-        color: var(--gallery-card-text-color);
-        font-family: inherit;
-        outline: none;
-        font-size: 0.95em;
-        cursor: pointer;
-        text-align: center;
-        height: 24px;
-        line-height: normal;
-      }
-      .header-trailing {
-        grid-column: 3;
-        display: flex;
-        align-items: center;
-        justify-content: flex-end;
         gap: 2px;
-        min-width: 0;
       }
-      /* Narrow lists: put the title on its own row so the date picker and actions never overlap. */
-      @container gallery-menu (max-width: 339px) {
-        .card-header-actions.has-date {
-          grid-template-columns: minmax(0, 1fr) auto;
-        }
-        .has-date .header-leading {
-          grid-column: 1 / -1;
-        }
-        .has-date .date-filter-container {
-          grid-column: 1;
-        }
-        .has-date .header-trailing {
-          grid-column: 2;
-        }
+      .info-counter {
+        margin-right: 6px;
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
+        color: var(--gallery-text-secondary);
       }
-      .action-text {
-        cursor: pointer;
-        color: var(--gallery-card-primary-color);
-        border: 0;
-        background: transparent;
-        font-family: inherit;
-        font-size: 0.9em;
-        font-weight: 500;
-        padding: 4px 8px;
-        border-radius: 4px;
-        transition: background 0.2s;
-        white-space: nowrap;
+      .viewer .info-relative,
+      .viewer .info-counter {
+        color: rgba(255, 255, 255, 0.7);
       }
-      .btn-clear-date {
-        color: var(--error-color, #db4437);
+      .icon-button ha-icon {
+        --mdc-icon-size: 24px;
+      }
+      .spinning {
+        animation: gallery-spin 0.9s linear infinite;
       }
       .icon-button {
-        width: 32px;
-        height: 32px;
+        width: 40px;
+        height: 40px;
         flex: none;
         display: inline-flex;
         align-items: center;
@@ -1728,121 +2141,240 @@ class GalleryCard extends LitElement {
         border: 0;
         border-radius: 50%;
         background: transparent;
-        color: var(--gallery-card-text-color);
+        color: inherit;
         cursor: pointer;
+        text-decoration: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .icon-button:hover:not(:disabled) {
+        background: rgba(127, 127, 127, 0.22);
+      }
+      .icon-button[aria-pressed="true"] {
+        color: var(--gallery-accent);
       }
       .icon-button:disabled {
         cursor: default;
-        opacity: 0.45;
+        opacity: 0.4;
       }
-      .action-text:hover,
-      .icon-button:hover:not(:disabled),
-      .load-more:hover {
-        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.1);
-      }
-      .icon-button:hover:not(:disabled) {
-        color: var(--gallery-card-primary-color);
-      }
-      .action-text:focus-visible,
       .icon-button:focus-visible,
+      .chip:focus-visible,
       .load-more:focus-visible,
-      .modal-close:focus-visible {
-        outline: 2px solid var(--gallery-card-primary-color);
-        outline-offset: 1px;
+      .empty-action:focus-visible,
+      .strip-item:focus-visible {
+        outline: 2px solid var(--gallery-accent);
+        outline-offset: 2px;
+      }
+
+      /* Timeline */
+      .timeline {
+        container: gallery-menu / inline-size;
+        flex: none;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        background: var(--gallery-surface);
+      }
+      .date-chips {
+        flex: none;
+        display: flex;
+        gap: 6px;
+        padding: 12px;
+        overflow-x: auto;
+        scrollbar-width: none;
+        border-bottom: 1px solid var(--gallery-divider);
+      }
+      .date-chips::-webkit-scrollbar {
+        display: none;
+      }
+      .chip {
+        position: relative;
+        flex: none;
+        height: 32px;
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        padding: 0 12px;
+        border: 1px solid var(--gallery-divider);
+        border-radius: 16px;
+        background: transparent;
+        color: var(--gallery-text);
+        font-size: 13px;
+        white-space: nowrap;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .chip:hover {
+        background: var(--gallery-placeholder);
+      }
+      .chip.active {
+        border-color: transparent;
+        background: rgba(var(--gallery-accent-rgb), 0.16);
+        color: var(--gallery-accent);
+        font-weight: 500;
+      }
+      .chip-date ha-icon {
+        --mdc-icon-size: 16px;
+      }
+      .chip-date:focus-within {
+        outline: 2px solid var(--gallery-accent);
+        outline-offset: 2px;
+      }
+      .date-picker {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        opacity: 0;
+        cursor: pointer;
       }
       .error-list {
         flex: none;
         max-height: 112px;
-        padding: 8px;
+        padding: 8px 12px;
         overflow-y: auto;
-        box-sizing: border-box;
-        background: var(--gallery-card-bg-color);
-        border-bottom: 1px solid var(--divider-color, #e0e0e0);
+        border-bottom: 1px solid var(--gallery-divider);
       }
       .resource-menu {
-        padding: 12px;
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
-        grid-auto-rows: max-content;
-        gap: 12px;
-        overflow-y: auto;
-        align-content: start;
+        flex: 1 1 auto;
         min-height: 0;
-        width: 100%;
-        box-sizing: border-box;
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        grid-auto-rows: max-content;
+        align-content: start;
+        gap: 12px 10px;
+        padding: 12px 12px 16px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
         scrollbar-width: thin;
-        scrollbar-color: rgba(var(--rgb-primary-color, 3, 169, 244), 0.3) transparent;
+        scrollbar-color: rgba(127, 127, 127, 0.4) transparent;
       }
-      .resource-menu::-webkit-scrollbar {
-        width: 4px;
-        height: 4px;
-      }
-      .resource-menu::-webkit-scrollbar-thumb {
-        background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.3);
-        border-radius: 4px;
-      }
-      .resource-menu figure {
-        margin: 0;
-        width: 100%;
-        cursor: pointer;
-        border-radius: 8px;
-        overflow: hidden;
-        background: #222;
-        transition: transform 0.2s ease, box-shadow 0.2s ease;
-        position: relative;
-        aspect-ratio: 16 / 9;
-        align-self: start;
-        box-sizing: border-box;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.2);
-        -webkit-tap-highlight-color: transparent;
-      }
-      @media (hover: hover) {
-        .resource-menu figure:not(.resource-skeleton):hover {
-          transform: translateY(-2px);
-          box-shadow: 0 6px 15px rgba(0,0,0,0.4);
+      @container gallery-menu (min-width: 480px) {
+        .resource-menu {
+          grid-template-columns: repeat(3, minmax(0, 1fr));
         }
       }
-      .resource-menu figure.selected {
-        outline: 2px solid var(--gallery-card-primary-color);
-        outline-offset: 2px;
-        box-shadow: 0 0 0 4px rgba(var(--rgb-primary-color, 3, 169, 244), 0.2);
+      @container gallery-menu (min-width: 680px) {
+        .resource-menu {
+          grid-template-columns: repeat(4, minmax(0, 1fr));
+        }
       }
-      .resource-menu figure:focus-visible {
-        outline: 2px solid var(--gallery-card-primary-color);
-        outline-offset: 2px;
+      @container gallery-menu (min-width: 900px) {
+        .resource-menu {
+          grid-template-columns: repeat(5, minmax(0, 1fr));
+        }
       }
-      .resource-skeleton {
-        cursor: default;
-        box-shadow: none;
+      .day-header {
+        grid-column: 1 / -1;
+        position: sticky;
+        top: 0;
+        z-index: 1;
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 8px;
+        margin: -4px -12px -4px;
+        padding: 8px 12px 6px;
+        background: var(--gallery-surface);
+        font-size: 14px;
+        font-weight: 600;
+      }
+      .day-date::before {
+        content: " · ";
+      }
+      .day-count {
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--gallery-text-secondary);
+        font-variant-numeric: tabular-nums;
+      }
+      .thumb {
+        margin: 0;
+        min-width: 0;
+        cursor: pointer;
+        outline: none;
+        -webkit-tap-highlight-color: transparent;
+      }
+      .thumb-media {
+        position: relative;
+        aspect-ratio: var(--gallery-media-aspect, 16 / 9);
+        overflow: hidden;
+        border-radius: 8px;
+        background: var(--gallery-placeholder);
+        transition: box-shadow 0.15s ease;
+      }
+      .thumb-media img,
+      .thumb-media video {
+        object-fit: cover;
+        transition: transform 0.3s ease, opacity 0.3s ease;
+      }
+      .thumb-media .lzy_img:not([src]),
+      .thumb-media .lzy_video:not([src]) {
+        opacity: 0;
+      }
+      @media (hover: hover) {
+        .thumb:hover .thumb-media img,
+        .thumb:hover .thumb-media video {
+          transform: scale(1.05);
+        }
+      }
+      .thumb.selected .thumb-media {
+        box-shadow: 0 0 0 2px var(--gallery-surface), 0 0 0 4px var(--gallery-accent);
+      }
+      .thumb:focus-visible .thumb-media {
+        box-shadow: 0 0 0 2px var(--gallery-surface), 0 0 0 4px var(--gallery-accent);
+      }
+      .thumb figcaption {
+        margin-top: 6px;
+        font-size: 12px;
+        line-height: 1.3;
+        color: var(--gallery-text-secondary);
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .thumb.selected figcaption {
+        color: var(--gallery-accent);
+        font-weight: 600;
+      }
+      .video-badge {
+        position: absolute;
+        right: 6px;
+        bottom: 6px;
+        display: inline-flex;
+        align-items: center;
+        gap: 2px;
+        padding: 1px 6px 1px 3px;
+        border-radius: 4px;
+        background: rgba(0, 0, 0, 0.6);
+        color: #fff;
+        font-size: 11px;
+        line-height: 18px;
+        font-variant-numeric: tabular-nums;
         pointer-events: none;
       }
-      .skeleton-media {
-        width: 100%;
-        height: 100%;
-        background: linear-gradient(90deg, #242424 0%, #363636 45%, #242424 90%);
-        background-size: 220% 100%;
-        animation: gallery-card-shimmer 1.2s ease-in-out infinite;
+      .video-badge ha-icon {
+        --mdc-icon-size: 14px;
       }
-      .skeleton-caption {
+      .new-dot {
         position: absolute;
-        left: 10px;
-        right: 10px;
-        bottom: 8px;
+        top: 6px;
+        left: 6px;
+        width: 8px;
         height: 8px;
-        border-radius: 4px;
-        background: rgba(255, 255, 255, 0.3);
-      }
-      .menu-empty {
-        grid-column: 1 / -1;
-        flex: 1 1 auto;
-        padding: 20px 8px;
-        color: var(--secondary-text-color, #727272);
-        text-align: center;
-        font-size: 0.9em;
+        border-radius: 50%;
+        background: var(--gallery-accent);
+        box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.3);
       }
       .thumbnail-loading,
       .thumbnail-error,
-      .video-placeholder {
+      .video-placeholder,
+      .skeleton-media {
         width: 100%;
         height: 100%;
       }
@@ -1852,74 +2384,47 @@ class GalleryCard extends LitElement {
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 4px;
-        color: rgba(255, 255, 255, 0.76);
-        font-size: 0.78em;
+        gap: 2px;
+        color: var(--gallery-text-secondary);
+        font-size: 12px;
       }
-      .thumbnail-error ha-icon,
-      .video-placeholder ha-icon {
-        --mdc-icon-size: 28px;
+      .skeleton-media {
+        background: linear-gradient(90deg, var(--gallery-placeholder) 0%, rgba(127, 127, 127, 0.26) 45%, var(--gallery-placeholder) 90%);
+        background-size: 220% 100%;
+        animation: gallery-shimmer 1.2s ease-in-out infinite;
       }
-      .resource-menu img,
-      .resource-menu video {
-        object-fit: cover;
-      }
-      .resource-menu .lzy_img:not([src]),
-      .resource-menu .lzy_video:not([src]) {
-        opacity: 0;
-      }
-      .resource-menu figcaption {
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        right: 0;
-        padding: 4px 6px;
-        font-size: 0.7em;
-        color: #fff;
-        text-align: center;
-        background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        box-sizing: border-box;
-      }
-      .duration {
-        position: absolute;
-        top: 4px;
-        right: 4px;
-        padding: 0 5px;
-        border-radius: 4px;
-        background: rgba(0, 0, 0, 0.65);
-        color: #fff;
-        font-size: 0.68em;
-        font-variant-numeric: tabular-nums;
-        line-height: 1.6;
+      .resource-skeleton {
         pointer-events: none;
       }
-      .duration:empty {
-        display: none;
+      .skeleton-caption {
+        width: 40%;
+        height: 10px;
+        margin-top: 8px;
+        border-radius: 5px;
+        background: var(--gallery-placeholder);
       }
-      @container gallery-card (min-width: 600px) {
-        .resource-menu figcaption {
-          font-size: 0.85em;
-        }
+      .menu-empty {
+        grid-column: 1 / -1;
+        padding: 32px 8px;
+        color: var(--gallery-text-secondary);
+        text-align: center;
+        font-size: 14px;
       }
       .load-more {
         grid-column: 1 / -1;
-        width: 100%;
-        text-align: center;
-        padding: 6px;
+        padding: 10px;
         border: 0;
-        background: transparent;
-        font: inherit;
+        border-radius: 8px;
+        background: var(--gallery-placeholder);
+        color: var(--gallery-text-secondary);
+        font-size: 13px;
         cursor: pointer;
-        color: var(--gallery-card-primary-color);
-        font-weight: 500;
-        transition: background 0.2s;
-        border-radius: 4px;
+      }
+      .load-more:hover {
+        color: var(--gallery-accent);
       }
 
-      /* Layout modes (wide cards) */
+      /* Wide layouts */
       .menu-responsive,
       .menu-right {
         flex-direction: row;
@@ -1930,80 +2435,266 @@ class GalleryCard extends LitElement {
       .menu-top {
         flex-direction: column-reverse;
       }
-      .menu-responsive .resource-menu-container,
-      .menu-right .resource-menu-container,
-      .menu-left .resource-menu-container {
-        width: var(--gallery-card-sidebar-width);
+      /* Side timeline: the preview takes the width its media needs at full height, and the timeline
+         gets the rest (at least --gallery-card-sidebar-width), so the picture is never shrunk to make
+         room for thumbnails while space is left over. */
+      .menu-responsive .stage,
+      .menu-right .stage,
+      .menu-left .stage {
+        flex: 0 1 auto;
+        aspect-ratio: var(--gallery-media-aspect, 16 / 9);
       }
-      .menu-responsive .resource-menu,
-      .menu-right .resource-menu,
-      .menu-left .resource-menu {
-        flex: 1 1 0;
-        grid-template-columns: minmax(0, 1fr);
+      .menu-responsive .timeline,
+      .menu-right .timeline,
+      .menu-left .timeline {
+        flex: 1 0 var(--gallery-card-sidebar-width, 280px);
+        min-width: var(--gallery-card-sidebar-width, 280px);
+      }
+      .menu-responsive .info-text,
+      .menu-right .info-text,
+      .menu-left .info-text {
+        flex-basis: 100%;
+      }
+      .menu-responsive .info-actions,
+      .menu-right .info-actions,
+      .menu-left .info-actions {
+        flex: 1 1 100%;
+        margin-left: -8px;
+      }
+      .menu-responsive .info-counter,
+      .menu-right .info-counter,
+      .menu-left .info-counter {
+        order: 1;
+        margin-left: auto;
+      }
+      .menu-responsive .timeline,
+      .menu-right .timeline {
+        border-left: 1px solid var(--gallery-divider);
+      }
+      .menu-left .timeline {
+        border-right: 1px solid var(--gallery-divider);
+      }
+      .menu-hidden .timeline {
+        display: none;
+      }
+      /* Filmstrip layouts (top/bottom): info bar and date chips share one row above the strip. */
+      .menu-top .timeline,
+      .menu-bottom .timeline {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+      }
+      .menu-top .timeline > :not(.info-bar):not(.date-chips),
+      .menu-bottom .timeline > :not(.info-bar):not(.date-chips) {
+        grid-column: 1 / -1;
       }
       .menu-top .resource-menu,
       .menu-bottom .resource-menu {
+        flex: none;
         display: flex;
+        gap: 10px;
+        padding: 12px;
         overflow-x: auto;
         overflow-y: hidden;
       }
-      .menu-top .resource-menu figure,
-      .menu-bottom .resource-menu figure {
-        flex: 0 0 var(--gallery-card-strip-item-width);
+      .menu-top .thumb,
+      .menu-bottom .thumb {
+        flex: 0 0 var(--gallery-card-strip-item-width, 150px);
+        margin-top: 0;
+      }
+      .menu-top .day-header,
+      .menu-bottom .day-header {
+        flex: none;
+        position: sticky;
+        top: auto;
+        left: -12px;
+        margin: 0;
+        padding: 0 10px;
+        align-self: stretch;
+        justify-content: center;
+        align-items: center;
+        border-radius: 8px;
+        /* Opaque: the tab stays pinned while thumbnails scroll underneath it. */
+        background: linear-gradient(var(--gallery-placeholder), var(--gallery-placeholder)), var(--gallery-surface);
+        box-shadow: 6px 0 8px -6px rgba(0, 0, 0, 0.3);
+      }
+      .menu-top .day-label,
+      .menu-bottom .day-label {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 2px;
+        white-space: nowrap;
+      }
+      .menu-top .day-date,
+      .menu-bottom .day-date {
+        font-size: 11px;
+        font-weight: 400;
+        color: var(--gallery-text-secondary);
+      }
+      .menu-top .day-date::before,
+      .menu-bottom .day-date::before {
+        content: none;
+      }
+      .menu-top .day-count,
+      .menu-bottom .day-count {
+        display: none;
       }
       .menu-top .load-more,
       .menu-bottom .load-more {
         flex: none;
-        width: auto;
-        padding: 6px 16px;
+        padding: 0 16px;
         white-space: nowrap;
       }
-      .menu-hidden .resource-menu-container {
-        display: none;
+      .menu-top .timeline,
+      .menu-bottom .timeline {
+        border-top: 1px solid var(--gallery-divider);
       }
 
-      /* Narrow cards: preview on top with a fixed ratio, thumbnails as a grid below.
-         ha-card[class] outranks the per-mode selectors above without !important. */
+      /* Card mode on wide layouts: the preview sets the height and the timeline matches it. */
+      ha-card.height-auto .stage {
+        flex: 1 1 auto;
+        aspect-ratio: var(--gallery-media-aspect, 16 / 9);
+        max-height: 80vh;
+      }
+      ha-card.height-auto.menu-responsive .timeline,
+      ha-card.height-auto.menu-right .timeline,
+      ha-card.height-auto.menu-left .timeline {
+        flex: 0 0 var(--gallery-card-sidebar-width, 280px);
+        contain: size;
+      }
+
+      /* Narrow cards (phones): preview on top, info bar under it, scrolling timeline below.
+         ha-card[class] outranks the per-layout rules above without !important. */
       @container gallery-card (max-width: 599px) {
         ha-card[class] {
           flex-direction: column;
-          height: auto;
+        }
+        ha-card[class] .stage {
+          flex: none;
+          aspect-ratio: auto;
+          max-height: none;
         }
         ha-card[class] .resource-viewer {
           flex: none;
-          width: 100%;
-          aspect-ratio: 16 / 9;
-          max-height: 70dvh;
+          aspect-ratio: var(--gallery-media-aspect, 16 / 9);
+          max-height: 50dvh;
         }
-        ha-card[class] .resource-menu-container {
+        /* One row on phones: the text gives way (ellipsis) instead of pushing the buttons to a second row. */
+        ha-card[class] .info-text {
+          flex: 1 1 0;
+        }
+        ha-card[class] .info-bar {
+          flex-wrap: nowrap;
+          gap: 8px;
+          padding: 4px 4px 4px 14px;
+        }
+        ha-card[class] .icon-button {
+          width: 36px;
+          height: 36px;
+        }
+        ha-card[class] .info-actions {
+          flex: none;
+          margin-left: 0;
+        }
+        /* The highlighted thumbnail already shows the position; the capture time must never be cut. */
+        ha-card[class] .info-counter {
+          display: none;
+        }
+        ha-card[class] .info-caption {
+          flex: none;
+          font-size: 15px;
+          color: var(--gallery-text);
+        }
+        ha-card[class] .timeline {
+          display: flex;
+          flex: 1 1 auto;
           width: 100%;
+          min-width: 0;
+          contain: none;
+          border: 0;
         }
         ha-card[class] .resource-menu {
           display: grid;
-          flex: none;
           grid-template-columns: repeat(3, minmax(0, 1fr));
-          overflow: visible;
+          gap: 10px 6px;
+          padding: 10px 10px 16px;
+          overflow-x: hidden;
+          overflow-y: auto;
+        }
+        ha-card[class] .thumb {
+          flex: initial;
+        }
+        ha-card[class] .thumb-media {
+          border-radius: 6px;
+        }
+        ha-card[class] .day-header {
+          position: sticky;
+          top: 0;
+          left: auto;
+          align-self: auto;
+          margin: -4px -10px -4px;
+          padding: 8px 10px 6px;
+          justify-content: space-between;
+          align-items: baseline;
+          border-radius: 0;
+          background: var(--gallery-surface);
+        }
+        ha-card[class] .day-label {
+          display: inline;
+        }
+        ha-card[class] .day-date {
+          font-size: inherit;
+          font-weight: inherit;
+          color: inherit;
+        }
+        ha-card[class] .day-date::before {
+          content: " · ";
+        }
+        ha-card[class] .day-count {
+          display: inline;
         }
         ha-card[class] .load-more {
-          width: 100%;
+          padding: 10px;
         }
-        .card-header-actions {
-          padding: 6px 12px;
+        /* On phones the current item's time matters more than the page title. */
+        .info-text.has-caption .info-title {
+          display: none;
         }
         .nav-icon-btn {
-          opacity: 0.82;
-          width: 38px;
-          height: 38px;
+          opacity: 0.85;
+          width: 36px;
+          height: 36px;
+        }
+        .date-chips {
+          padding: 10px;
+        }
+        ha-card.height-auto .timeline {
+          flex: none;
+        }
+        ha-card.menu-hidden[class]:not(.height-auto) .stage,
+        ha-card.menu-hidden[class]:not(.height-auto) .resource-viewer {
+          flex: 1 1 auto;
+          max-height: none;
+          aspect-ratio: auto;
+        }
+        ha-card.height-auto .resource-menu {
+          overflow: visible;
         }
       }
-      @container gallery-card (max-width: 340px) {
+      @container gallery-card (max-width: 320px) {
         ha-card[class] .resource-menu {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
       }
+      @media (hover: none) {
+        /* Touch screens have no hover to reveal the arrows. */
+        .resource-viewer .nav-icon-btn {
+          opacity: 0.85;
+        }
+      }
 
-      /* Full-screen preview */
-      .modal {
+      /* Full-screen viewer */
+      .viewer {
         inset: 0;
         width: 100%;
         height: 100%;
@@ -2014,76 +2705,123 @@ class GalleryCard extends LitElement {
         border: 0;
         overflow: hidden;
         overscroll-behavior: contain;
-        background: rgba(0, 0, 0, 0.95);
+        background: #000;
         color: #fff;
-        box-sizing: border-box;
       }
-      .modal[open] {
+      .viewer[open] {
         display: flex;
         flex-direction: column;
+        animation: gallery-fade-in 0.2s ease;
+      }
+      .viewer::backdrop {
+        background: #000;
+      }
+      .viewer-top {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: max(6px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 6px max(8px, env(safe-area-inset-left));
+      }
+      .viewer-title {
+        flex: 1 1 auto;
+        min-width: 0;
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+      .viewer-stage {
+        position: relative;
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow: hidden;
+        touch-action: none;
+        user-select: none;
+      }
+      .zoom-layer {
+        width: 100%;
+        height: 100%;
+        display: flex;
         align-items: center;
         justify-content: center;
-        gap: 12px;
-        padding: 56px max(16px, env(safe-area-inset-right)) max(20px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+        transform-origin: center;
+        transition: transform 0.2s ease;
       }
-      .modal::backdrop {
-        background: rgba(0, 0, 0, 0.6);
-        backdrop-filter: blur(5px);
+      .gesturing .zoom-layer {
+        transition: none;
       }
-      .modal-media {
-        flex: 0 1 auto;
-        width: auto;
-        height: auto;
+      .viewer-media {
         max-width: 100%;
         max-height: 100%;
-        min-height: 0;
+        width: auto;
+        height: auto;
         object-fit: contain;
-        animation: zoom 0.3s;
+        animation: gallery-zoom-in 0.25s ease;
       }
-      hui-image.modal-media {
+      hui-image.viewer-media {
         width: 100%;
         height: 100%;
       }
-      .modal-caption {
+      .viewer-strip {
         flex: none;
-        max-width: 100%;
-        text-align: center;
-        font-size: 1.1em;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .modal-close {
-        position: absolute;
-        z-index: 1;
-        top: max(8px, env(safe-area-inset-top));
-        right: max(8px, env(safe-area-inset-right));
-        width: 44px;
-        height: 44px;
         display: flex;
-        align-items: center;
-        justify-content: center;
+        gap: 6px;
+        justify-content: safe center;
+        padding: 8px max(12px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+        overflow-x: auto;
+        scrollbar-width: none;
+      }
+      .viewer-strip::-webkit-scrollbar {
+        display: none;
+      }
+      .strip-item {
+        flex: 0 0 64px;
+        height: 42px;
         padding: 0;
         border: 0;
-        border-radius: 50%;
-        background: rgba(255, 255, 255, 0.12);
-        color: #fff;
+        border-radius: 6px;
+        overflow: hidden;
+        background: #222;
+        opacity: 0.5;
         cursor: pointer;
+        transition: opacity 0.15s ease;
       }
-      .modal-close:hover {
-        background: rgba(255, 255, 255, 0.24);
+      .strip-item:hover,
+      .strip-item.selected {
+        opacity: 1;
       }
-      .modal-close ha-icon {
-        --mdc-icon-size: 28px;
+      .strip-item.selected {
+        box-shadow: inset 0 0 0 2px #fff;
       }
-      @keyframes zoom {
-        from { transform: scale(0.92); opacity: 0; }
+      .strip-item img,
+      .strip-item video {
+        object-fit: cover;
+      }
+      .strip-item .thumbnail-error,
+      .strip-item .video-placeholder {
+        color: rgba(255, 255, 255, 0.6);
+        font-size: 0;
+      }
+      @media (hover: none) {
+        .viewer .viewer-nav {
+          display: none;
+        }
+      }
+
+      @keyframes gallery-fade-in {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes gallery-zoom-in {
+        from { transform: scale(0.96); opacity: 0; }
         to { transform: scale(1); opacity: 1; }
       }
-      @keyframes gallery-card-spin {
+      @keyframes gallery-spin {
         to { transform: rotate(360deg); }
       }
-      @keyframes gallery-card-shimmer {
+      @keyframes gallery-shimmer {
         0% { background-position: 100% 0; }
         100% { background-position: -100% 0; }
       }

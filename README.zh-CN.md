@@ -12,17 +12,17 @@
 
 ## 当前功能
 
-- 大图/视频预览区，缩略图列表可显示在右侧、左侧、顶部、底部，也可隐藏或使用响应式布局。
+- 以整页显示为主（默认填满仪表盘标题栏以下的屏幕），也可以通过 `height: auto` 作为普通卡片使用。
+- 预览区按媒体比例自适应：宽屏下预览区取媒体在满高时所需的宽度，剩余空间给时间轴（屏幕越宽列数越多）；缩略图也使用同样比例，4:3 录像不会被裁切或压缩。
+- 信息栏位于时间轴顶部（不会盖住画面），显示标题、拍摄时间、相对时间（如“3 分钟前”）、位置计数，以及幻灯片、下载、全屏和刷新按钮。
+- 缩略图按天分组成时间轴，日期标题吸顶（如“今天 · 10月21日”）并显示当天数量；有日期的条目只显示时间。
+- 用“全部 / 今天 / 昨天 / 选择日期”快捷按钮代替原生日期框。
+- 全屏查看器支持图片、视频和摄像头，带底部缩略图条；左右滑动切换、下滑关闭，支持双指、滚轮或双击缩放，放大后可拖动。
+- 缩略图列表可显示在右侧、左侧、顶部、底部，也可隐藏或使用响应式布局；手机上预览区固定在顶部，下方时间轴单独滚动。
 - 支持图片、视频、Home Assistant 相机实体、`media-source://` 路径和文件列表传感器属性。
-- 预览区和缩略图列表都有加载中与空状态。
-- 缩略图懒加载，仅在缩略图进入滚动视口时解析对应媒体 URL。
-- 支持日期筛选，可配合文件夹或文件名日期解析。
-- 支持触摸滑动、键盘方向键导航，移动端会显示上一张/下一张按钮。
-- 列表工具栏支持显示标题和手动刷新按钮。
-- 支持可选幻灯片播放和视频播放设置；手动切换时会重新开始幻灯片倒计时。
-- 图片支持全屏查看（在全屏中切换到视频时同样可播放），支持滑动和方向键切换。
-- 预览区显示当前位置计数，视频缩略图显示时长。
-- 会清理键盘监听、懒加载观察器、幻灯片定时器和临时媒体 URL 缓存。
+- 缩略图懒加载，进入视野时才解析媒体 URL；滚动到底部时自动加载更多。
+- 视频缩略图显示时长，一小时内的新记录带小圆点标记。
+- 支持触摸滑动和键盘方向键切换，浅色和深色主题下都跟随 Home Assistant 主题。
 
 ## 安装
 
@@ -126,18 +126,20 @@ entities:
 
 | 名称 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `title` | string | 无 | 在列表工具栏中显示紧凑标题。 |
-| `menu_alignment` | string | `responsive` | 可选 `responsive`、`right`、`left`、`bottom`、`top`、`hidden`。 |
-| `items_per_page` | number | `10` | 初始缩略图数量，也是点击“更多”时每次增加的数量。 |
-| `show_reload` | boolean | `false` | 在列表工具栏中显示手动刷新按钮。 |
+| `title` | string | 无 | 显示在信息栏中的标题。手机上会让位给当前条目的时间。 |
+| `aspect_ratio` | string/number | `auto` | 预览区和缩略图的比例。`auto` 使用第一个加载的媒体的比例（最窄为 1:1，竖屏内容两侧留黑边）；设为 `"4:3"`、`"16:9"` 或数字可固定比例，避免加载后的一次布局调整。 |
+| `height` | string/number | `viewport` | `viewport` 填满仪表盘标题栏以下的屏幕（适合面板视图）；`auto` 按内容高度显示，适合作为普通卡片；也可以填写任意 CSS 长度（如 `600`、`"80vh"`）固定高度。 |
+| `menu_alignment` | string | `responsive` | 可选 `responsive`、`right`、`left`、`bottom`、`top`、`hidden`。`top`、`bottom` 为横向缩略图条。窄卡片始终是预览在上、时间轴在下。 |
+| `items_per_page` | number | `10` | 每页加载的缩略图数量，滚动到底部时自动加载下一页。 |
+| `show_reload` | boolean | `false` | 在信息栏中显示手动刷新按钮。 |
 
-宽卡片（600px 及以上）时，卡片高度会填满仪表盘标题栏以下的视口；窄卡片时，预览区为 16:9，缩略图以网格形式显示在下方。可以通过 CSS 变量（例如 card-mod）调整尺寸：
+也可以通过 CSS 变量（例如 card-mod）调整尺寸：
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `--gallery-card-height` | `calc(100dvh - var(--header-height))` | 宽布局下的卡片高度。 |
-| `--gallery-card-sidebar-width` | `clamp(220px, 25%, 360px)` | `responsive`、`left`、`right` 布局的缩略图栏宽度。 |
-| `--gallery-card-strip-item-width` | `160px` | `top`、`bottom` 横向缩略图条中每个缩略图的宽度。 |
+| `--gallery-card-height` | `calc(100dvh - var(--header-height))` | `height` 为 `viewport` 时的卡片高度。 |
+| `--gallery-card-sidebar-width` | `280px` | `responsive`、`left`、`right` 布局的时间轴最小宽度；预览区用不到的宽度也会分给时间轴。 |
+| `--gallery-card-strip-item-width` | `150px` | `top`、`bottom` 横向缩略图条中每个缩略图的宽度。 |
 
 ### 数量限制与排序
 
@@ -155,7 +157,7 @@ entities:
 
 | 名称 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `enable_date_search` | boolean | `false` | 显示日期选择器，并按所选日期筛选。 |
+| `enable_date_search` | boolean | `false` | 显示日期快捷按钮（全部 / 今天 / 昨天 / 选择日期），并按所选日期筛选。 |
 | `search_date_folder_format` | string | `DD_MM_YYYY` | 递归筛选日期文件夹时使用的文件夹名称格式。 |
 | `date_search_adjacent_days` | number | `1` | 同时检查所选日期前后最多几天的目录，再按文件名日期精确筛选。需配置 `file_name_format`，范围为 `0`-`7`。 |
 | `folder_format` | string | 无 | 与 `maximum_files` 和倒序排序配合时，可启用最近文件夹定向搜索。 |
@@ -173,7 +175,7 @@ entities:
 | `video_preload` | boolean | `true` | 缩略图中是否预加载视频 metadata。 |
 | `preview_video_at` | number | `0.1` | 视频缩略图 metadata 使用的时间点。 |
 | `show_duration` | boolean | `true` | 视频元数据加载后，在视频缩略图上显示时长。 |
-| `slideshow_timer` | number/string | 无 | 自动切换预览的秒数间隔。 |
+| `slideshow_timer` | number/string | 无 | 幻灯片切换间隔（秒）；设置后会自动开始播放。信息栏中的播放按钮可随时开始或暂停（未设置时间隔为 5 秒）。 |
 | `slideshow_video_end` | boolean | `false` | 视频播放结束后是否自动切换到下一项。 |
 
 ### 性能
