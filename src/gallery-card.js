@@ -92,7 +92,7 @@ class GalleryCard extends LitElement {
           ${this.errors.length > 0 ? html`<div class="error-list" role="status">
             ${this.errors.map(error => html`<hui-warning>${error}</hui-warning>`)}
           </div>` : html``}
-          <div class="resource-menu">
+          <div class="resource-menu ${this._isTimelineGrouped(resources) ? "grouped" : ""}">
             ${this._isLoading ? this._renderMenuLoadingState() : resources.length === 0 ? html`<div class="menu-empty">${this._isDateFiltered ? "这一天没有记录" : "暂无媒体"}</div>` : this._renderTimelineItems(resources)}
             ${!this._isLoading && this._itemsToShow < resources.length ?
         html`<button type="button" class="load-more" @click="${this._loadMore}">加载更多（还有 ${resources.length - this._itemsToShow} 项）</button>` :
@@ -164,8 +164,8 @@ class GalleryCard extends LitElement {
         </div>
         <div class="info-actions">
           ${hasMedia && total > 1 ? html`<span class="info-counter">${this.currentResourceIndex + 1} / ${total}</span>` : html``}
-          ${hasMedia && total > 1 ? html`<button type="button" class="icon-button" @click="${this._toggleSlideshow}" aria-pressed="${this._slideshowRunning ? "true" : "false"}" aria-label="${this._slideshowRunning ? "暂停幻灯片" : "播放幻灯片"}" title="${this._slideshowRunning ? "暂停幻灯片" : "播放幻灯片"}">
-            <ha-icon icon="${this._slideshowRunning ? "mdi:pause" : "mdi:play"}"></ha-icon>
+          ${hasMedia && total > 1 && this._hasSlideshowTimer() ? html`<button type="button" class="icon-button" @click="${this._toggleSlideshow}" aria-pressed="${this._slideshowRunning ? "true" : "false"}" aria-label="${this._slideshowRunning ? "暂停幻灯片" : "继续幻灯片"}" title="${this._slideshowRunning ? "暂停幻灯片" : "继续幻灯片"}">
+            <ha-icon icon="${this._slideshowRunning ? "mdi:pause-box-outline" : "mdi:play-box-multiple-outline"}"></ha-icon>
           </button>` : html``}
           ${hasMedia ? this._renderDownloadButton(resource) : html``}
           ${hasMedia ? html`<button type="button" class="icon-button" @click="${() => this._openViewer()}" aria-label="全屏查看" title="全屏查看">
@@ -213,10 +213,14 @@ class GalleryCard extends LitElement {
     `;
   }
 
+  // Random order would scatter days into many tiny groups, so only a dated, ordered list is grouped.
+  _isTimelineGrouped(resources) {
+    return !this._isLoading && !(this.config.random_sort ?? false) && resources.slice(0, this._itemsToShow).some(resource => resource.date);
+  }
+
   _renderTimelineItems(resources) {
     const visibleResources = resources.slice(0, this._itemsToShow);
-    // Random order would scatter days into many tiny groups, so only group a dated, ordered list.
-    const groupByDay = !(this.config.random_sort ?? false) && visibleResources.some(resource => resource.date);
+    const groupByDay = this._isTimelineGrouped(resources);
     const dayCounts = groupByDay ? this._countResourcesByDay(resources) : undefined;
     const items = [];
     let previousGroup;
@@ -252,6 +256,7 @@ class GalleryCard extends LitElement {
 
   _renderThumbnail(resource, index, groupByDay) {
     const label = resource.caption || resource.name || `媒体 ${index + 1}`;
+    const tooltip = this._getResourceTooltip(resource) || label;
     const isSelected = index === this.currentResourceIndex;
     const isVideo = !resource.isHass && !this._isImageResource(resource);
     const showDuration = isVideo && (this.config.show_duration ?? true);
@@ -261,7 +266,7 @@ class GalleryCard extends LitElement {
       groupByDay && resource.date && !resource.isHass ? resource.date.format("HH:mm") : resource.caption;
 
     return html`
-      <figure id="resource${index}" class="thumb ${isSelected ? "selected" : ""}" @click="${() => this._selectResource(index)}" @keydown="${event => this._handleResourceKeydown(event, index)}" tabindex="0" role="button" aria-current="${isSelected ? "true" : "false"}" aria-label="${label}" title="${label}">
+      <figure id="resource${index}" class="thumb ${isSelected ? "selected" : ""}" @click="${() => this._selectResource(index)}" @keydown="${event => this._handleResourceKeydown(event, index)}" tabindex="0" role="button" aria-current="${isSelected ? "true" : "false"}" aria-label="${label}" title="${tooltip}">
         <div class="thumb-media">
           ${this._renderThumbnailMedia(resource, index)}
           ${isVideo ? html`<span class="video-badge"><ha-icon icon="mdi:play"></ha-icon>${showDuration ? html`<span class="duration"></span>` : html``}</span>` : html``}
@@ -333,7 +338,8 @@ class GalleryCard extends LitElement {
               <button type="button" class="nav-icon-btn" @click="${() => this._selectResource(this.currentResourceIndex + 1)}" aria-label="下一个" title="下一个"><ha-icon icon="mdi:chevron-right"></ha-icon></button>
             </div>` : html``}
           </div>
-          ${resources.length > 1 ? html`<div class="viewer-strip">${this._renderViewerStrip()}</div>` : html``}
+          ${resources.length > 1 ? html`<div class="viewer-strip">${this._renderViewerStrip()}</div>
+            <div class="strip-tooltip" role="tooltip" hidden></div>` : html``}
         ` : html``}
       </dialog>
     `;
@@ -355,15 +361,52 @@ class GalleryCard extends LitElement {
     const resources = this.resources || [];
     const current = this.currentResourceIndex;
     // Only a window around the current item: the strip must stay light for galleries with thousands of items.
-    const indexes = [];
+    const showDays = !(this.config.random_sort ?? false) && resources.some(resource => resource.date);
+    const entries = [];
+    let previousGroup;
 
-    for (let index = Math.max(0, current - 15); index < Math.min(resources.length, current + 16); index++) indexes.push(index);
+    for (let index = Math.max(0, current - 15); index < Math.min(resources.length, current + 16); index++) {
+      const group = showDays ? this._getDayGroupKey(resources[index]) : undefined;
 
-    return repeat(indexes, index => `${index}:${this._getResourceKey(resources[index])}`, index => html`
-      <button type="button" id="strip${index}" class="strip-item ${index === current ? "selected" : ""}" @click="${() => this._selectResource(index)}" aria-label="${resources[index].caption || resources[index].name}" aria-current="${index === current ? "true" : "false"}">
+      // A day label starts the strip and marks every change of day.
+      if (showDays && group !== previousGroup) {
+        entries.push({ key: `day:${index}:${group}`, group, resource: resources[index] });
+        previousGroup = group;
+      }
+      entries.push({ key: `${index}:${this._getResourceKey(resources[index])}`, index });
+    }
+
+    return repeat(entries, entry => entry.key, entry => entry.group ? this._renderStripDay(entry.group, entry.resource) : this._renderStripItem(entry.index));
+  }
+
+  _renderStripDay(group, resource) {
+    const [name, date] = group === "camera" ? ["摄像头", ""] : group === "other" ? ["其他", ""] : [this._getDayLabelParts(resource.date)[0], resource.date.format("M/D")];
+
+    return html`
+      <div class="strip-day" aria-hidden="true">
+        <span>${name}</span>
+        ${date ? html`<span class="strip-day-date">${date}</span>` : html``}
+      </div>
+    `;
+  }
+
+  _renderStripItem(index) {
+    const resources = this.resources;
+    const current = this.currentResourceIndex;
+
+    return html`
+      <button type="button" id="strip${index}" class="strip-item ${index === current ? "selected" : ""}"
+        @click="${() => this._handleStripClick(index)}"
+        @pointerenter="${event => this._handleStripPointerEnter(event, index)}"
+        @pointerdown="${event => this._handleStripPointerDown(event, index)}"
+        @pointerup="${this._handleStripPointerUp}"
+        @pointerleave="${this._hideStripTooltip}"
+        @pointercancel="${this._hideStripTooltip}"
+        @contextmenu="${event => event.preventDefault()}"
+        aria-label="${this._getResourceTooltip(resources[index]) || resources[index].caption || resources[index].name}" aria-current="${index === current ? "true" : "false"}">
         ${this._renderThumbnailMedia(resources[index], index)}
       </button>
-    `);
+    `;
   }
 
   _renderLoadingState(label) {
@@ -403,6 +446,15 @@ class GalleryCard extends LitElement {
         <div class="skeleton-caption"></div>
       </figure>
     `);
+  }
+
+  // Full date and time (with relative time) for tooltips; falls back to the caption for undated items.
+  _getResourceTooltip(resource) {
+    if (!resource?.date) return resource?.caption || "";
+
+    const relativeTime = this._formatRelativeTime(resource.date);
+
+    return `${this._formatMonthDay(resource.date)} ${resource.date.format("HH:mm:ss")}${relativeTime ? ` · ${relativeTime}` : ""}`;
   }
 
   _getResourceTitle(resource) {
@@ -556,7 +608,8 @@ class GalleryCard extends LitElement {
       aspect_ratio: this._normalizeAspectRatio(config.aspect_ratio)
     };
     this._slideshowRunning = Number.isFinite(slideshowSeconds) && slideshowSeconds > 0;
-    this._mediaAspect = undefined;
+    this._mediaAspect = this._readStoredMediaAspect();
+    this._mediaAspectMeasured = false;
     if (previousEntities !== JSON.stringify(entities)) this._clearBrowseCache();
     this._itemsToShow = this.config.items_per_page;
     this._previewErrorIndex = undefined;
@@ -664,11 +717,16 @@ class GalleryCard extends LitElement {
     if (!firstTime && !this._isPreviewVideoPlaying())
       this._selectResource(this.currentResourceIndex + 1, true);
 
+    if (this.isConnected && this._hasSlideshowTimer()) {
+      this._slideshowTimer = setTimeout(() => { this._doSlideShow(); }, Number.parseInt(this.config.slideshow_timer) * 1000);
+    }
+  }
+
+  // The slideshow control only appears when slideshow_timer is configured.
+  _hasSlideshowTimer() {
     const seconds = Number.parseInt(this.config?.slideshow_timer);
 
-    if (this.isConnected) {
-      this._slideshowTimer = setTimeout(() => { this._doSlideShow(); }, (Number.isFinite(seconds) && seconds > 0 ? seconds : 5) * 1000);
-    }
+    return Number.isFinite(seconds) && seconds > 0;
   }
 
   _toggleSlideshow() {
@@ -753,9 +811,18 @@ class GalleryCard extends LitElement {
     this._scrollWithin(this.shadowRoot?.querySelector(".resource-menu"), this.shadowRoot?.querySelector(`#resource${index}`));
   }
 
+  // Keeps the current item centered in the viewer's filmstrip.
   _scrollStripItemIntoView(index) {
-    if (index !== this.currentResourceIndex || !this._isModalOpen) return;
-    this._scrollWithin(this.shadowRoot?.querySelector(".viewer-strip"), this.shadowRoot?.querySelector(`#strip${index}`));
+    const strip = this.shadowRoot?.querySelector(".viewer-strip");
+    const item = this.shadowRoot?.querySelector(`#strip${index}`);
+
+    if (index !== this.currentResourceIndex || !this._isModalOpen || !strip || !item) return;
+
+    const stripRect = strip.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    const offset = itemRect.left + itemRect.width / 2 - (stripRect.left + stripRect.width / 2);
+
+    if (Math.abs(offset) > 1) strip.scrollTo({ left: strip.scrollLeft + offset, behavior: "smooth" });
   }
 
   _scrollWithin(container, element) {
@@ -788,14 +855,37 @@ class GalleryCard extends LitElement {
     return this.resources?.[this.currentResourceIndex];
   }
 
-  // The wide layout sizes the preview to the media (full height, matching width), so the measured ratio
-  // decides how much room the timeline gets. The first measurement wins so a gallery with mixed ratios
-  // doesn't reflow on every item, and it is kept at least square: portrait items are pillarboxed instead
-  // of turning the whole page portrait. A configured aspect_ratio takes precedence.
+  // The preview is sized from the first media measured after each config (at least 1:1), so mixed ratios
+  // don't reflow on every item. The value is remembered per source so the next page load starts at the
+  // right size instead of jumping once the video loads. A configured aspect_ratio takes precedence.
   _updateMediaAspect(width, height) {
-    if (this._mediaAspect || !width || !height) return;
+    if (this._mediaAspectMeasured || !width || !height) return;
 
-    this._mediaAspect = Math.round(Math.min(Math.max(width / height, 1), 2.4) * 1000) / 1000;
+    const aspect = Math.round(Math.min(Math.max(width / height, 1), 2.4) * 1000) / 1000;
+
+    this._mediaAspectMeasured = true;
+    if (this._mediaAspect && Math.abs(this._mediaAspect - aspect) <= 0.01) return;
+
+    this._mediaAspect = aspect;
+    try {
+      localStorage.setItem(this._getAspectStorageKey(), String(aspect));
+    } catch {
+      // Storage can be unavailable (private mode); the ratio is then measured on each load.
+    }
+  }
+
+  _getAspectStorageKey() {
+    return `gallery-card-aspect:${JSON.stringify(this.config.entities)}`;
+  }
+
+  _readStoredMediaAspect() {
+    try {
+      const aspect = Number(localStorage.getItem(this._getAspectStorageKey()));
+
+      return aspect >= 1 && aspect <= 2.4 ? aspect : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   _startVideo(event) {
@@ -856,6 +946,7 @@ class GalleryCard extends LitElement {
   }
 
   _closeViewer() {
+    this._hideStripTooltip();
     const viewer = this.shadowRoot?.querySelector("dialog.viewer");
 
     if (viewer?.open) viewer.close();
@@ -864,6 +955,65 @@ class GalleryCard extends LitElement {
 
   _handleModalClosed() {
     this._isModalOpen = false;
+  }
+
+  _handleStripPointerEnter(event, index) {
+    if (event.pointerType === "mouse") this._showStripTooltip(event.currentTarget, index);
+  }
+
+  // Touch has no hover: a long press shows the tooltip instead.
+  _handleStripPointerDown(event, index) {
+    this._stripLongPressed = false;
+    if (event.pointerType === "mouse") return;
+
+    const target = event.currentTarget;
+
+    clearTimeout(this._stripPressTimer);
+    this._stripPressTimer = setTimeout(() => {
+      this._stripLongPressed = true;
+      this._showStripTooltip(target, index);
+    }, 400);
+  }
+
+  _handleStripPointerUp(event) {
+    clearTimeout(this._stripPressTimer);
+    if (event.pointerType !== "mouse") this._hideStripTooltip();
+  }
+
+  _handleStripClick(index) {
+    // A long press only peeks at the date; releasing it must not switch items.
+    if (this._stripLongPressed) {
+      this._stripLongPressed = false;
+      return;
+    }
+    this._selectResource(index);
+  }
+
+  _showStripTooltip(item, index) {
+    const tooltip = this.shadowRoot.querySelector(".strip-tooltip");
+    const viewer = this.shadowRoot.querySelector("dialog.viewer");
+    const text = this._getResourceTooltip(this.resources?.[index]);
+
+    if (!tooltip || !viewer || !text) return;
+
+    tooltip.textContent = text;
+    tooltip.hidden = false;
+
+    const itemRect = item.getBoundingClientRect();
+    const viewerRect = viewer.getBoundingClientRect();
+    const halfWidth = tooltip.offsetWidth / 2;
+    const center = itemRect.left + itemRect.width / 2 - viewerRect.left;
+
+    tooltip.style.left = `${Math.min(Math.max(center, halfWidth + 8), viewerRect.width - halfWidth - 8)}px`;
+    tooltip.style.top = `${itemRect.top - viewerRect.top - 8}px`;
+  }
+
+  _hideStripTooltip() {
+    clearTimeout(this._stripPressTimer);
+
+    const tooltip = this.shadowRoot?.querySelector(".strip-tooltip");
+
+    if (tooltip) tooltip.hidden = true;
   }
 
   _handleViewerStageClick(event) {
@@ -2253,6 +2403,10 @@ class GalleryCard extends LitElement {
         scrollbar-width: thin;
         scrollbar-color: rgba(127, 127, 127, 0.4) transparent;
       }
+      /* Grouped lists start with a sticky day header, which must stick flush under the chips. */
+      .resource-menu.grouped {
+        padding-top: 0;
+      }
       @container gallery-menu (min-width: 480px) {
         .resource-menu {
           grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -2277,8 +2431,8 @@ class GalleryCard extends LitElement {
         align-items: baseline;
         justify-content: space-between;
         gap: 8px;
-        margin: -4px -12px -4px;
-        padding: 8px 12px 6px;
+        margin: 0 -12px;
+        padding: 12px 12px 4px;
         background: var(--gallery-surface);
         font-size: 14px;
         font-weight: 600;
@@ -2298,6 +2452,8 @@ class GalleryCard extends LitElement {
         cursor: pointer;
         outline: none;
         -webkit-tap-highlight-color: transparent;
+        -webkit-touch-callout: none;
+        user-select: none;
       }
       .thumb-media {
         position: relative;
@@ -2621,6 +2777,9 @@ class GalleryCard extends LitElement {
           overflow-x: hidden;
           overflow-y: auto;
         }
+        ha-card[class] .resource-menu.grouped {
+          padding-top: 0;
+        }
         ha-card[class] .thumb {
           flex: initial;
         }
@@ -2632,8 +2791,8 @@ class GalleryCard extends LitElement {
           top: 0;
           left: auto;
           align-self: auto;
-          margin: -4px -10px -4px;
-          padding: 8px 10px 6px;
+          margin: 0 -10px;
+          padding: 12px 10px 4px;
           justify-content: space-between;
           align-items: baseline;
           border-radius: 0;
@@ -2769,7 +2928,7 @@ class GalleryCard extends LitElement {
         display: flex;
         gap: 6px;
         justify-content: safe center;
-        padding: 8px max(12px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+        padding: 10px max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
         overflow-x: auto;
         scrollbar-width: none;
       }
@@ -2777,23 +2936,79 @@ class GalleryCard extends LitElement {
         display: none;
       }
       .strip-item {
-        flex: 0 0 64px;
-        height: 42px;
+        position: relative;
+        flex: none;
+        height: 44px;
+        aspect-ratio: var(--gallery-media-aspect, 16 / 9);
         padding: 0;
         border: 0;
         border-radius: 6px;
         overflow: hidden;
         background: #222;
-        opacity: 0.5;
+        opacity: 0.45;
         cursor: pointer;
-        transition: opacity 0.15s ease;
+        transition: opacity 0.15s ease, transform 0.15s ease;
+        -webkit-tap-highlight-color: transparent;
+        -webkit-touch-callout: none;
+        user-select: none;
       }
-      .strip-item:hover,
+      /* Drawn above the media: an inset shadow on the button would be hidden under the image. */
+      .strip-item::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        border: 2px solid transparent;
+        border-radius: inherit;
+        pointer-events: none;
+      }
+      .strip-item:hover {
+        opacity: 0.8;
+      }
       .strip-item.selected {
         opacity: 1;
+        transform: scale(1.08);
       }
-      .strip-item.selected {
-        box-shadow: inset 0 0 0 2px #fff;
+      .strip-item.selected::after {
+        border-color: #fff;
+      }
+      .strip-day {
+        flex: none;
+        align-self: center;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 44px;
+        padding: 0 2px 0 8px;
+        border-left: 1px solid rgba(255, 255, 255, 0.28);
+        color: rgba(255, 255, 255, 0.85);
+        font-size: 11px;
+        line-height: 1.35;
+        white-space: nowrap;
+      }
+      .strip-day:first-child {
+        padding-left: 0;
+        border-left: 0;
+      }
+      .strip-day-date {
+        color: rgba(255, 255, 255, 0.55);
+        font-variant-numeric: tabular-nums;
+      }
+      .strip-tooltip {
+        position: absolute;
+        z-index: 3;
+        transform: translate(-50%, -100%);
+        padding: 4px 10px;
+        border-radius: 6px;
+        background: rgba(255, 255, 255, 0.92);
+        color: #111;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        white-space: nowrap;
+        pointer-events: none;
+      }
+      .strip-tooltip[hidden] {
+        display: none;
       }
       .strip-item img,
       .strip-item video {

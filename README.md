@@ -14,10 +14,10 @@ This project is a fork adapted for a more gallery-like layout, date filtering, l
 
 - Designed as a full dashboard page first (it fills the viewport below the header), and also works as a regular card with `height: auto`.
 - The preview is sized to the media: on wide screens it takes the width the video or image needs at full height, and the timeline gets the rest (more columns on wide screens). Thumbnails use the same ratio, so 4:3 recordings are never cropped or squeezed.
-- An info bar at the top of the timeline (never on top of the picture) shows the title, capture time, relative time ("3 分钟前"), position, and slideshow, download, full-screen, and reload actions.
+- An info bar at the top of the timeline (never on top of the picture) shows the title, capture time, relative time ("3 分钟前"), position, and download, full-screen, and reload actions (plus a slideshow pause button when `slideshow_timer` is set).
 - Timeline of thumbnails grouped by day with sticky day headers ("今天 · 10月21日") and per-day counts; dated items are labeled by time.
 - Quick date chips (全部 / 今天 / 昨天 / pick a date) instead of a bare date input.
-- Full-screen viewer for images, videos, and cameras with a thumbnail filmstrip, swipe to navigate, swipe down to close, pinch, wheel, or double-tap zoom, and drag to pan.
+- Full-screen viewer for images, videos, and cameras with a thumbnail filmstrip (hover or long-press an item to see its date and time), swipe to navigate, swipe down to close, pinch, wheel, or double-tap zoom, and drag to pan.
 - Thumbnail list on the right, left, top, bottom, hidden, or responsive layout. On phones the preview stays pinned at the top while the timeline scrolls below it.
 - Supports images, videos, Home Assistant camera entities, `media-source://` paths, and file-list sensor attributes.
 - Lazy thumbnail loading with media URLs resolved only when thumbnails enter view, and more items loaded automatically while scrolling.
@@ -127,7 +127,7 @@ Supported object fields:
 | Name | Type | Default | Description |
 |------|------|---------|-------------|
 | `title` | string | none | Title shown in the info bar. On phones the current item's time takes its place. |
-| `aspect_ratio` | string/number | `auto` | Preview and thumbnail ratio. `auto` uses the first loaded media (at least 1:1, so portrait items are pillarboxed). Set `"4:3"`, `"16:9"`, or a number to fix it and avoid the one-time adjustment after loading. |
+| `aspect_ratio` | string/number | `auto` | Preview and thumbnail ratio. `auto` uses the first loaded media (at least 1:1, so portrait items are pillarboxed) and remembers it in the browser, so later visits open at the right size; only the very first visit adjusts once after loading. Set `"4:3"`, `"16:9"`, or a number to fix it. |
 | `height` | string/number | `viewport` | `viewport` fills the screen below the dashboard header (best in a panel view). `auto` sizes to content for use as a regular card. Any CSS length (`600`, `"80vh"`) sets a fixed height. |
 | `menu_alignment` | string | `responsive` | `responsive`, `right`, `left`, `bottom`, `top`, or `hidden`. `top` and `bottom` show a horizontal filmstrip. Narrow cards always stack the preview above the timeline. |
 | `items_per_page` | number | `10` | Thumbnails loaded per page; more load automatically while scrolling. |
@@ -175,7 +175,7 @@ Old strftime-like tokens such as `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` are converte
 | `video_preload` | boolean | `true` | Preload video metadata in thumbnails. |
 | `preview_video_at` | number | `0.1` | Timestamp used for video thumbnail preview metadata. |
 | `show_duration` | boolean | `true` | Show the video length on video thumbnails once their metadata has loaded. |
-| `slideshow_timer` | number/string | none | Seconds between slides; when set, the slideshow starts automatically. The play button in the info bar starts or pauses it at any time (5 seconds when unset). |
+| `slideshow_timer` | number/string | none | Seconds between slides. When set, the slideshow starts automatically and the info bar shows a button to pause or resume it. |
 | `slideshow_video_end` | boolean | `false` | Advance slideshow when a video ends. |
 
 ### Performance
