@@ -1,8 +1,17 @@
 import { LitElement, html, css } from "lit-element";
 import { repeat } from "lit-html/directives/repeat.js";
 import dayjs from "dayjs";
+import "dayjs/locale/zh-cn";
 import customParseFormat from "dayjs/plugin/customParseFormat";
 import relativeTime from "dayjs/plugin/relativeTime";
+import {
+  computeQueuePreview,
+  ensureTargetDirectory,
+  inferDateFromFile,
+  renderUploadDialog,
+  resolveUniqueFileName,
+  uploadFileToHA
+} from "./upload-dialog.js";
 
 const GalleryCardVersion = "2026.0.1";
 const ValidMenuAlignments = new Set(["responsive", "right", "left", "bottom", "top", "hidden"]);
@@ -10,6 +19,7 @@ const WeekdayNames = ["周日", "周一", "周二", "周三", "周四", "周五"
 
 dayjs.extend(customParseFormat);
 dayjs.extend(relativeTime);
+dayjs.locale("zh-cn");
 
 class GalleryCard extends LitElement {
   static get properties() {
@@ -27,6 +37,11 @@ class GalleryCard extends LitElement {
       _slideshowRunning: { type: Boolean },
       _mediaAspect: { type: Number },
       _previewErrorIndex: { type: Number },
+      _uploadState: { type: Object },
+      _deleteTarget: { type: Object },
+      _isDeleting: { type: Boolean },
+      _deleteError: { type: String },
+      _watchdogDismissedKey: { type: String },
       errors: { type: Array }
     };
   }
@@ -56,9 +71,26 @@ class GalleryCard extends LitElement {
     this._mediaBrowseInflight = new Map();
     this._browseCacheGeneration = 0;
     this._loadToken = 0;
-    this._pendingLoadRequested = false;
     this._slideshowTimer = undefined;
     this._cameraEntityIds = [];
+    this._videoDurations = new Map();
+    this._uploadState = {
+      open: false,
+      items: [],
+      dragOver: false,
+      uploading: false,
+      currentProgress: 0,
+      completedCount: 0,
+      error: "",
+      canFallbackToRoot: false,
+      forceRoot: false,
+      lockedDate: null
+    };
+    this._activeUploadXhr = null;
+    this._deleteTarget = null;
+    this._isDeleting = false;
+    this._deleteError = "";
+    this._watchdogDismissedKey = "";
     this._viewerPointers = new Map();
     this._viewerGesture = undefined;
     this._zoom = { scale: 1, x: 0, y: 0 };
@@ -85,9 +117,11 @@ class GalleryCard extends LitElement {
         <section class="stage">
           ${this._renderStage(currentResource)}
           ${infoBarInStage ? this._renderInfoBar(currentResource) : html``}
+          ${infoBarInStage ? this._renderWatchdogBanner() : html``}
         </section>
         <aside class="timeline">
           ${infoBarInStage ? html`` : this._renderInfoBar(currentResource)}
+          ${infoBarInStage ? html`` : this._renderWatchdogBanner()}
           ${this._renderDateChips()}
           ${this.errors.length > 0 ? html`<div class="error-list" role="status">
             ${this.errors.map(error => html`<hui-warning>${error}</hui-warning>`)}
@@ -101,6 +135,8 @@ class GalleryCard extends LitElement {
           </div>
         </aside>
         ${this._renderViewer(currentResource)}
+        ${renderUploadDialog(this)}
+        ${this._renderConfirmDialog()}
       </ha-card>
     `;
   }
@@ -113,9 +149,14 @@ class GalleryCard extends LitElement {
     if (this._isLoading) {
       content = this._renderLoadingState("正在加载媒体...");
     } else if (!resource) {
+      const dateEmptyActions = html`<div class="empty-actions">
+        <button type="button" class="empty-action" @click="${() => this._setDateFilter(null)}">查看全部</button>
+        ${this._canUpload() ? html`<button type="button" class="empty-action primary" @click="${() => this._openUploadDialog(this.selectedDate)}">补传这一天的录像</button>` : html``}
+      </div>`;
+
       content = this.errors.length > 0 ? this._renderEmptyState(errorHint) :
-        this._isDateFiltered ? this._renderEmptyState("这一天没有记录", html`<button type="button" class="empty-action" @click="${() => this._setDateFilter(null)}">查看全部</button>`) :
-          this._renderEmptyState("还没有图片或视频");
+        this._isDateFiltered ? this._renderEmptyState("这一天没有记录", dateEmptyActions) :
+          this._renderEmptyState("还没有图片或视频", this._canUpload() ? html`<button type="button" class="empty-action primary" @click="${() => this._openUploadDialog()}">补传录像</button>` : undefined);
     } else if (resource.resolveError || this._previewErrorIndex === this.currentResourceIndex) {
       content = this._renderErrorState(errorHint);
     } else if (resource.pendingAuth) {
@@ -130,7 +171,7 @@ class GalleryCard extends LitElement {
     } else if (this._isImageResource(resource)) {
       content = html`<img class="preview-image" @click="${() => this._openViewer()}" @load="${event => this._updateMediaAspect(event.target.naturalWidth, event.target.naturalHeight)}" @error="${() => this._handlePreviewError()}" src="${resource.url}" alt="${resource.caption || resource.name}"/>`;
     } else {
-      content = html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay && !this._isModalOpen} .muted=${Boolean(this.config.video_muted)} src="${resource.url}#t=0.1" @error="${() => this._handlePreviewError()}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}"
+      content = html`<video controls ?loop=${this.config.video_loop} ?autoplay=${this.config.video_autoplay && !this._isModalOpen} .muted=${Boolean(this.config.video_muted)} data-resource-key="${this._getResourceKey(resource)}" src="${resource.url}#t=0.1" @error="${() => this._handlePreviewError()}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" @canplay="${event => this._startVideo(event)}"
         @ended="${() => this._videoHasEnded()}" preload="metadata" playsinline webkit-playsinline></video>`;
     }
 
@@ -168,6 +209,12 @@ class GalleryCard extends LitElement {
             <ha-icon icon="${this._slideshowRunning ? "mdi:pause-box-outline" : "mdi:play-box-multiple-outline"}"></ha-icon>
           </button>` : html``}
           ${hasMedia ? this._renderDownloadButton(resource) : html``}
+          ${hasMedia && this._canDelete(resource) ? html`<button type="button" class="icon-button danger" @click="${() => this._openDeleteConfirm(resource)}" aria-label="删除录像" title="删除录像">
+            <ha-icon icon="mdi:delete-outline"></ha-icon>
+          </button>` : html``}
+          ${this._canUpload() ? html`<button type="button" class="icon-button" @click="${() => this._openUploadDialog()}" aria-label="补传录像" title="补传录像">
+            <ha-icon icon="mdi:upload"></ha-icon>
+          </button>` : html``}
           ${hasMedia ? html`<button type="button" class="icon-button" @click="${() => this._openViewer()}" aria-label="全屏查看" title="全屏查看">
             <ha-icon icon="mdi:fullscreen"></ha-icon>
           </button>` : html``}
@@ -199,6 +246,9 @@ class GalleryCard extends LitElement {
     const isCustom = Boolean(selected) && !isToday && !isYesterday;
     const chip = (label, active, date) => html`<button type="button" class="chip ${active ? "active" : ""}" aria-pressed="${active ? "true" : "false"}" @click="${() => this._setDateFilter(date)}">${label}</button>`;
 
+    const maxDate = dayjs().format("YYYY-MM-DD");
+    const formattedValue = this._formatDateForInput(this.selectedDate);
+
     return html`
       <div class="date-chips" role="toolbar" aria-label="按日期筛选">
         ${chip("全部", !selected, null)}
@@ -207,8 +257,9 @@ class GalleryCard extends LitElement {
         <label class="chip chip-date ${isCustom ? "active" : ""}">
           <ha-icon icon="mdi:calendar-month-outline"></ha-icon>
           <span>${isCustom ? this._formatMonthDay(selected) : "日期"}</span>
-          <input type="date" class="date-picker" aria-label="选择日期" .value="${this._formatDateForInput(this.selectedDate)}" @click="${this._openDatePicker}" @change="${this._handleDateChange}">
+          <input type="date" class="date-picker" aria-label="选择日期" max="${maxDate}" .value="${formattedValue}" @click="${this._openDatePicker}" @change="${this._handleDateChange}">
         </label>
+        <input type="date" class="date-picker-anchor" aria-hidden="true" tabindex="-1" max="${maxDate}" .value="${formattedValue}" @change="${this._handleDateChange}">
       </div>
     `;
   }
@@ -260,6 +311,7 @@ class GalleryCard extends LitElement {
     const isSelected = index === this.currentResourceIndex;
     const isVideo = !resource.isHass && !this._isImageResource(resource);
     const showDuration = isVideo && (this.config.show_duration ?? true);
+    const duration = showDuration ? this._videoDurations.get(this._getResourceKey(resource)) : undefined;
     const minutesAgo = resource.date ? dayjs().diff(resource.date, "minute") : -1;
     // Day headers already carry the date, so grouped items only need their time.
     const thumbnailLabel = this.config.caption_format === " " ? "" :
@@ -269,7 +321,7 @@ class GalleryCard extends LitElement {
       <figure id="resource${index}" class="thumb ${isSelected ? "selected" : ""}" @click="${() => this._selectResource(index)}" @keydown="${event => this._handleResourceKeydown(event, index)}" tabindex="0" role="button" aria-current="${isSelected ? "true" : "false"}" aria-label="${label}" title="${tooltip}">
         <div class="thumb-media">
           ${this._renderThumbnailMedia(resource, index)}
-          ${isVideo ? html`<span class="video-badge"><ha-icon icon="mdi:play"></ha-icon>${showDuration ? html`<span class="duration"></span>` : html``}</span>` : html``}
+          ${isVideo ? html`<span class="video-badge"><ha-icon icon="mdi:play"></ha-icon>${showDuration ? html`<span class="duration">${duration || ""}</span>` : html``}</span>` : html``}
           ${minutesAgo >= 0 && minutesAgo < 60 ? html`<span class="new-dot" title="一小时内的新记录"></span>` : html``}
         </div>
         ${thumbnailLabel ? html`<figcaption>${thumbnailLabel}</figcaption>` : html``}
@@ -303,7 +355,7 @@ class GalleryCard extends LitElement {
       return html`<img class="lzy_img" data-src="${resource.url}" @error="${() => this._handleThumbnailError(resource)}" alt="" decoding="async" draggable="false"/>`;
     }
     if (this.config.video_preload ?? true) {
-      return html`<video class="lzy_video" preload="metadata" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at}" @error="${() => this._handleThumbnailError(resource)}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" muted playsinline></video>`;
+      return html`<video class="lzy_video" preload="metadata" data-resource-key="${this._getResourceKey(resource)}" data-src="${resource.url}#t=${(this.config.preview_video_at === undefined) ? 0.1 : this.config.preview_video_at}" @error="${() => this._handleThumbnailError(resource)}" @loadedmetadata="${event => this._videoMetadataLoaded(event)}" muted playsinline></video>`;
     }
     return html`<div class="video-placeholder"><ha-icon icon="mdi:movie-play-outline"></ha-icon></div>`;
   }
@@ -323,6 +375,7 @@ class GalleryCard extends LitElement {
               ${relativeTime ? html`<span class="info-relative">${relativeTime}</span>` : html``}
             </div>
             ${resources.length > 1 ? html`<span class="info-counter">${this.currentResourceIndex + 1} / ${resources.length}</span>` : html``}
+            ${this._canDelete(resource) ? html`<button type="button" class="icon-button danger" @click="${() => this._openDeleteConfirm(resource)}" aria-label="删除录像" title="删除录像"><ha-icon icon="mdi:delete-outline"></ha-icon></button>` : html``}
             ${this._renderDownloadButton(resource)}
           </div>
           <div class="viewer-stage"
@@ -517,7 +570,9 @@ class GalleryCard extends LitElement {
     if (this.resources !== undefined) this._addKeyNavigationListener();
     if (this.config) this._doSlideShow(true);
     // Keeps "3 分钟前" labels and new-item dots current while the page stays open.
-    this._clockTimer ??= setInterval(() => this.requestUpdate(), 60 * 1000);
+    this._clockTimer ??= setInterval(() => {
+      if (!document.hidden) this.requestUpdate();
+    }, 60 * 1000);
     this.requestUpdate();
   }
 
@@ -595,9 +650,34 @@ class GalleryCard extends LitElement {
 
     delete configWithoutEntity.entity;
 
+    const defaultUploadTarget = entities
+      .map(entity => (typeof entity === "object" ? entity.path : entity))
+      .find(path => typeof path === "string" && path.startsWith("media-source://media_source/local")) || "media-source://media_source/local";
+    const uploadConfig = config.upload ? {
+      enabled: Boolean(config.upload.enabled),
+      allow_delete: config.upload.allow_delete !== false,
+      target_path: String(config.upload.target_path || defaultUploadTarget).replace(/\/+$/, ""),
+      folder_format: config.upload.folder_format !== undefined ?
+        this._convertOldFormat(config.upload.folder_format) :
+        (this._convertOldFormat(config.folder_format) || this._convertOldFormat(config.search_date_folder_format) || ""),
+      file_name_format: this._convertOldFormat(config.upload.file_name_format || config.file_name_format) || "YYYYMMDDHHmmss",
+      mkdir_service: String(config.upload.mkdir_service || "").trim(),
+      accept: String(config.upload.accept || "video/*,image/*").trim()
+    } : { enabled: false };
+    const watchdogTimeout = Number(config.watchdog?.timeout_hours);
+    const watchdogConfig = config.watchdog ? {
+      enabled: Boolean(config.watchdog.enabled),
+      timeout_hours: Number.isFinite(watchdogTimeout) && watchdogTimeout > 0 ? watchdogTimeout : 24,
+      stale_entity: String(config.watchdog.stale_entity || "").trim(),
+      error_entity: String(config.watchdog.error_entity || "").trim(),
+      toggle_entity: String(config.watchdog.toggle_entity || "").trim()
+    } : { enabled: false };
+
     this.config = {
       ...configWithoutEntity,
       entities,
+      upload: uploadConfig,
+      watchdog: watchdogConfig,
       menu_alignment: ValidMenuAlignments.has(menuAlignment) ? menuAlignment : "responsive",
       items_per_page: Number.isFinite(itemsPerPage) && itemsPerPage > 0 ? itemsPerPage : 10,
       browse_cache_seconds: Number.isFinite(browseCacheSeconds) && browseCacheSeconds >= 0 ? browseCacheSeconds : 20,
@@ -649,7 +729,7 @@ class GalleryCard extends LitElement {
 
     if (this.resources === undefined)
       this._loadResources(hass);
-    else if (this._haveCameraStatesChanged(previousHass, hass))
+    else if (this._haveWatchedEntitiesChanged(previousHass, hass))
       this.requestUpdate();
   }
 
@@ -657,12 +737,25 @@ class GalleryCard extends LitElement {
     return this._hass;
   }
 
-  _haveCameraStatesChanged(previousHass, hass) {
-    return this._cameraEntityIds.some(entityId => previousHass?.states[entityId] !== hass?.states[entityId]);
+  _haveWatchedEntitiesChanged(previousHass, hass) {
+    if (this._cameraEntityIds.some(entityId => previousHass?.states[entityId] !== hass?.states[entityId])) {
+      return true;
+    }
+
+    const watchdog = this.config?.watchdog;
+
+    if (!watchdog?.enabled) return false;
+
+    const watchedIds = [watchdog.stale_entity, watchdog.error_entity, watchdog.toggle_entity].filter(Boolean);
+
+    return watchedIds.some(entityId => previousHass?.states[entityId] !== hass?.states[entityId]);
   }
 
   disconnectedCallback() {
     super.disconnectedCallback();
+    this.shadowRoot?.querySelector(".resource-viewer video")?.pause();
+    this._activeUploadXhr?.abort();
+    this._activeUploadXhr = null;
     this._removeKeyNavigationListener();
     this._clearSlideshowTimer();
     this._closeViewer();
@@ -756,8 +849,6 @@ class GalleryCard extends LitElement {
   }
 
   _selectResource(index, fromSlideshow) {
-    this.autoPlayVideo = true;
-
     if (!this.resources || this.resources.length === 0) return;
 
     let nextResourceIndex = Number.isFinite(index) ? index : 0;
@@ -775,6 +866,7 @@ class GalleryCard extends LitElement {
     this.currentResourceIndex = nextResourceIndex;
     this._previewErrorIndex = undefined;
     const selectedResource = this.resources[this.currentResourceIndex];
+    this._pendingAutoplayKey = this.config.video_autoplay ? this._getResourceKey(selectedResource) : undefined;
 
     if ((selectedResource.resolveError || selectedResource.thumbnailError) && selectedResource.mediaContentId) {
       this._mediaResolveCache.delete(selectedResource.mediaContentId);
@@ -889,29 +981,47 @@ class GalleryCard extends LitElement {
   }
 
   _startVideo(event) {
-    // canplay fires again after every seek or rebuffer; only the first one after a selection may start playback.
-    if (!this.autoPlayVideo) return;
+    // canplay fires again after every seek or rebuffer; only play once for the intended selection.
+    if (!this.config.video_autoplay || this._isModalOpen) return;
 
-    this.autoPlayVideo = false;
-    if (this._isModalOpen) return;
+    const video = event.target;
+    const resourceKey = video.dataset?.resourceKey || "";
+    if (!this._pendingAutoplayKey || resourceKey !== this._pendingAutoplayKey) return;
 
-    const playRequest = event.target.play();
+    this._pendingAutoplayKey = undefined;
+    video.muted = Boolean(this.config.video_muted);
 
-    if (playRequest) playRequest.catch(() => {});
+    const playRequest = video.play();
+    if (playRequest && typeof playRequest.catch === "function") {
+      playRequest.catch(() => {
+        // Browsers block unmuted autoplay before user interaction; retry muted so playback still starts.
+        if (!video.muted) {
+          video.muted = true;
+          const retry = video.play();
+          if (retry && typeof retry.catch === "function") retry.catch(() => {});
+        }
+      });
+    }
   }
 
   _videoMetadataLoaded(event) {
-    const durationElement = event.target.closest("figure")?.querySelector(".duration");
+    const video = event.target;
+    const resourceKey = video.dataset?.resourceKey || this._getResourceKey(this._currentResource());
 
-    if (event.target.closest(".resource-viewer"))
-      this._updateMediaAspect(event.target.videoWidth, event.target.videoHeight);
+    if (video.closest(".resource-viewer"))
+      this._updateMediaAspect(video.videoWidth, video.videoHeight);
 
-    if (Number.isFinite(event.target.duration) && durationElement) {
-      durationElement.textContent = this._getFormattedVideoDuration(event.target.duration);
+    if (Number.isFinite(video.duration) && resourceKey) {
+      const formatted = this._getFormattedVideoDuration(video.duration);
+
+      if (this._videoDurations.get(resourceKey) !== formatted) {
+        this._videoDurations.set(resourceKey, formatted);
+        this.requestUpdate();
+      }
     }
 
     if (this.config.video_muted)
-      event.target.muted = true;
+      video.muted = true;
   }
 
   _videoHasEnded() {
@@ -1234,10 +1344,12 @@ class GalleryCard extends LitElement {
   }
 
   _keyNavigation(event) {
+    if (this._uploadState?.open || this._deleteTarget) return;
+
     const eventTarget = event.composedPath()[0];
     const isEditableTarget = eventTarget?.isContentEditable || ["INPUT", "TEXTAREA", "SELECT", "VIDEO"].includes(eventTarget?.tagName);
 
-    if (event.defaultPrevented || isEditableTarget || (!this.matches(":hover") && !this.shadowRoot.activeElement)) return;
+    if (event.defaultPrevented || isEditableTarget || (!this._isModalOpen && !this.matches(":hover") && !this.shadowRoot.activeElement)) return;
 
     switch (event.code) {
       case "ArrowDown":
@@ -1298,11 +1410,28 @@ class GalleryCard extends LitElement {
   }
 
   _openDatePicker(event) {
-    // Desktop browsers only open the calendar from the tiny icon; open it from anywhere on the chip.
-    try {
-      event.currentTarget.showPicker?.();
-    } catch {
-      // showPicker throws without user activation or in cross-origin frames; the native behavior remains.
+    // Anchor the picker inside .date-chips and shift left when near the right viewport edge.
+    const container = this.shadowRoot?.querySelector(".date-chips");
+    const chip = event.currentTarget.closest(".chip-date");
+    const anchor = container?.querySelector(".date-picker-anchor");
+
+    if (anchor && typeof anchor.showPicker === "function" && container && chip) {
+      const containerRect = container.getBoundingClientRect();
+      const chipRect = chip.getBoundingClientRect();
+      const pickerWidth = 300;
+      const margin = 12;
+      const overflow = chipRect.left + pickerWidth - (window.innerWidth - margin);
+      const targetViewportLeft = overflow > 0 ? Math.max(margin, chipRect.left - overflow) : chipRect.left;
+      const relativeLeft = Math.max(0, targetViewportLeft - containerRect.left + container.scrollLeft);
+
+      anchor.style.left = `${relativeLeft}px`;
+      try {
+        event.preventDefault();
+        anchor.showPicker();
+        return;
+      } catch {
+        // showPicker throws without user activation or in cross-origin frames; fall back to native input.
+      }
     }
   }
 
@@ -1327,10 +1456,6 @@ class GalleryCard extends LitElement {
   async _loadResources(hass) {
     if (!hass || !this.config) return;
 
-    if (this._isLoading) {
-      this._pendingLoadRequested = true;
-      return;
-    }
     const loadToken = ++this._loadToken;
 
     this._isLoading = true;
@@ -1420,6 +1545,9 @@ class GalleryCard extends LitElement {
 
     try {
       const resources = await Promise.all(fetchAll());
+
+      if (loadToken !== this._loadToken) return;
+
       let flatResources = resources.filter(result => !result.error).flat(Number.POSITIVE_INFINITY);
 
       if (filterForDate) flatResources = this._filterResourcesForSelectedDate(flatResources);
@@ -1452,6 +1580,9 @@ class GalleryCard extends LitElement {
       this.resources = flatResources;
       this._cameraEntityIds = flatResources.filter(resource => resource.isHass).map(resource => resource.name);
       this.currentResourceIndex = 0;
+      this._pendingAutoplayKey = (this.config.video_autoplay && this.resources.length > 0)
+        ? this._getResourceKey(this.resources[0])
+        : undefined;
       this._resolveResourceUrl(this.resources[0]);
       this._addKeyNavigationListener();
       this.updateComplete.then(() => this._scrollThumbnailIntoView(0));
@@ -1475,10 +1606,6 @@ class GalleryCard extends LitElement {
     } finally {
       if (loadToken === this._loadToken) {
         this._isLoading = false;
-        if (this._pendingLoadRequested) {
-          this._pendingLoadRequested = false;
-          this._loadResources(this._hass);
-        }
       }
     }
   }
@@ -1509,43 +1636,41 @@ class GalleryCard extends LitElement {
       const browseLimit = needsExactDateFilter ? undefined : maximumFiles;
 
       if (!filterForDate && folderFormat && reverseSort && maximumFiles !== undefined && !Number.isNaN(maximumFiles)) {  // Can do more targeted folder searching under these conditions
-        let date = dayjs();
-        let folderPrevious = "";
-        const failedPaths = [];
         const basePath = contentId.replace(/\/+$/, "");
-        let remainingSteps = 2 * 366;  // Never walk back more than a year of (half-day) folder candidates.
+        const rootDirectory = await this._fetchMediaContents(hass, basePath);
+        const rootChildren = rootDirectory?.children || [];
+        const rootFiles = rootChildren
+          .filter(child => this._shouldIncludeMediaItem(this, child, false, includeVideo, includeImages, false, false))
+          .map(child => ({
+            ...child,
+            pending_authentication: true
+          }));
+        const dateFolders = rootChildren
+          .filter(child => child.media_class === "directory")
+          .map(child => {
+            const folderTitle = String(child.title || "").replace(/\/$/, "");
+            const parsedDate = dayjs(folderTitle, folderFormat, true);
 
-        while (values.length < maximumFiles && remainingSteps-- > 0) {
-          const folder = date.format(folderFormat);
+            return parsedDate.isValid() && parsedDate.format(folderFormat) === folderTitle ?
+              { child, timestamp: parsedDate.valueOf() } :
+              null;
+          })
+          .filter(Boolean)
+          .sort((a, b) => (b.timestamp - a.timestamp) || this._compareTitles(b.child, a.child));
 
-          mediaPath = basePath + "/" + folder;
+        values.push(...rootFiles);
 
-          if (folder !== folderPrevious) {
-            try {
-              const folderValues = await this._loadMedia(this, hass, mediaPath, maximumFiles, false, reverseSort, includeVideo, includeImages, false, false);
+        for (const { child } of dateFolders) {
+          if (values.length >= maximumFiles) break;
 
-              values.push(...folderValues);
-            } catch (error) {
-              if (error.code === 'browse_media_failed')
-                failedPaths.push(mediaPath);
-              else
-                throw error;
-            }
-          }
+          mediaPath = child.media_content_id;
+          const remaining = maximumFiles - values.length;
+          const folderValues = await this._loadMedia(this, hass, mediaPath, remaining, false, reverseSort, includeVideo, includeImages, false, false);
 
-          if (failedPaths.length > 2) {
-            if (values.length === 0) {
-              mediaPath = failedPaths.join(',');
-              throw new Error('Failed to browse several folders and found no media files.  Verify your settings are correct.');
-            }
-            break;
-          }
-
-          folderPrevious = folder;
-          date = date.subtract(12, 'hour');  // Allows for AM/PM folders
+          values.push(...folderValues);
         }
 
-        values.sort((a, b) => String(b.title || "").localeCompare(String(a.title || "")));
+        values.sort((a, b) => this._compareTitles(b, a));
         if (values.length > maximumFiles) values.length = maximumFiles;
       } else
         values = await this._loadMedia(this, hass, mediaPath, browseLimit, recursive, reverseSort, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders);
@@ -1593,17 +1718,8 @@ class GalleryCard extends LitElement {
       await Promise.all(this._fetchMedia(reference, hass, mediaItem, recursive, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders));
     const mediaItems = values
       .flat(Number.POSITIVE_INFINITY)
-      .filter(function (item) { return item !== undefined; })
-      .sort(
-        function (a, b) {
-          if (a.title > b.title) {
-            return 1;
-          }
-          if (a.title < b.title) {
-            return -1;
-          }
-          return 0;
-        });
+      .filter(item => item !== undefined)
+      .sort((a, b) => this._compareTitles(a, b));
 
     if (reverseSort)
       mediaItems.reverse();
@@ -1664,7 +1780,7 @@ class GalleryCard extends LitElement {
       const directory = item.children ? item : await this._fetchMediaContents(hass, item.media_content_id);
       const children = [...(directory.children || [])]
         .filter(child => this._shouldIncludeMediaItem(reference, child, true, includeVideo, includeImages, filterForDate, includeAdjacentDateFolders))
-        .sort((a, b) => String(a.title || "").localeCompare(String(b.title || "")) * sortDirection);
+        .sort((a, b) => this._compareTitles(a, b) * sortDirection);
 
       for (const child of children) {
         if (collectedItems.length >= maximumFiles) break;
@@ -2037,6 +2153,399 @@ class GalleryCard extends LitElement {
     return dayjs(date).format("YYYY-MM-DD");
   }
 
+  _compareTitles(a, b) {
+    return String(a?.title || "").localeCompare(String(b?.title || ""));
+  }
+
+  _canUpload() {
+    return Boolean(this.config?.upload?.enabled && this._hass?.user?.is_admin);
+  }
+
+  _canDelete(resource) {
+    return Boolean(
+      this._canUpload() &&
+      this.config?.upload?.allow_delete !== false &&
+      resource &&
+      !resource.isHass &&
+      typeof resource.mediaContentId === "string" &&
+      resource.mediaContentId.startsWith("media-source://media_source/local")
+    );
+  }
+
+  _getWatchdogAlert() {
+    const watchdog = this.config?.watchdog;
+
+    if (!watchdog?.enabled) return null;
+    if (watchdog.toggle_entity && this._hass?.states?.[watchdog.toggle_entity]?.state === "off") return null;
+
+    const timeoutHours = watchdog.timeout_hours || 24;
+    const isMountError = Boolean(watchdog.mount_error_entity && this._hass?.states?.[watchdog.mount_error_entity]?.state === "on");
+
+    if (isMountError) {
+      const alert = {
+        key: "mount:error",
+        severity: "error",
+        message: "录像目录无法访问，请检查 NAS 挂载或路径配置",
+        hasErrorEntity: false
+      };
+
+      return alert.key === this._watchdogDismissedKey ? null : alert;
+    }
+
+    const errorState = watchdog.error_entity ? String(this._hass?.states?.[watchdog.error_entity]?.state || "").trim() : "";
+
+    if (errorState && errorState !== "unknown" && errorState !== "unavailable") {
+      const alert = {
+        key: `err:${errorState}`,
+        severity: "error",
+        message: `自动化异常：${errorState}`,
+        hasErrorEntity: true
+      };
+
+      return alert.key === this._watchdogDismissedKey ? null : alert;
+    }
+
+    let latestDate = null;
+
+    if (!this._isLoading && !this._isDateFiltered && Array.isArray(this.resources)) {
+      for (const item of this.resources) {
+        if (item.date && (!latestDate || item.date.valueOf() > latestDate.valueOf())) {
+          latestDate = item.date;
+        }
+      }
+    }
+
+    const hoursSinceLatest = latestDate ? dayjs().diff(latestDate, "hour", true) : null;
+    const isBackendStale = Boolean(watchdog.stale_entity && this._hass?.states?.[watchdog.stale_entity]?.state === "on");
+    const isFrontendStale = hoursSinceLatest !== null && hoursSinceLatest >= timeoutHours;
+
+    if (isBackendStale || isFrontendStale) {
+      const displayHours = hoursSinceLatest !== null && hoursSinceLatest >= 1 ? Math.floor(hoursSinceLatest) : timeoutHours;
+      const alert = {
+        key: isBackendStale ? `stale:entity:${displayHours}` : `stale:local:${latestDate.valueOf()}`,
+        severity: "warning",
+        message: `已 ${displayHours} 小时未检测到新录像`,
+        hasErrorEntity: false
+      };
+
+      return alert.key === this._watchdogDismissedKey ? null : alert;
+    }
+
+    return null;
+  }
+
+  _renderWatchdogBanner() {
+    const alert = this._getWatchdogAlert();
+
+    if (!alert) return html``;
+
+    return html`
+      <div class="watchdog-banner ${alert.severity}" role="status">
+        <div class="watchdog-info">
+          <ha-icon icon="${alert.severity === "error" ? "mdi:alert-octagon-outline" : "mdi:clock-alert-outline"}"></ha-icon>
+          <span class="watchdog-text">${alert.message}</span>
+        </div>
+        <div class="watchdog-actions">
+          ${this._canUpload() ? html`<button type="button" class="watchdog-btn primary" @click="${() => this._openUploadDialog()}">补传录像</button>` : html``}
+          <button type="button" class="watchdog-btn" @click="${() => this._dismissWatchdogAlert(alert)}">${alert.hasErrorEntity && this._hass?.user?.is_admin ? "清除" : "忽略"}</button>
+        </div>
+      </div>
+    `;
+  }
+
+  _dismissWatchdogAlert(alert) {
+    this._watchdogDismissedKey = alert.key;
+    if (alert.hasErrorEntity && this.config?.watchdog?.error_entity && this._hass?.user?.is_admin) {
+      Promise.resolve(this._hass.callService("input_text", "set_value", {
+        entity_id: this.config.watchdog.error_entity,
+        value: ""
+      })).catch(() => {});
+      Promise.resolve(this._hass.callService("persistent_notification", "dismiss", {
+        notification_id: "door_lock_watchdog_error"
+      })).catch(() => {});
+    }
+  }
+
+  _openUploadDialog(lockedDate = null) {
+    if (!this._canUpload()) return;
+
+    this._uploadState = {
+      open: true,
+      items: [],
+      dragOver: false,
+      uploading: false,
+      currentProgress: 0,
+      completedCount: 0,
+      error: "",
+      canFallbackToRoot: false,
+      forceRoot: false,
+      lockedDate: lockedDate ? dayjs(lockedDate).startOf("day").toDate() : null
+    };
+    this.updateComplete.then(() => {
+      const dialog = this.shadowRoot?.querySelector("dialog.upload-dialog");
+
+      if (dialog && !dialog.open) dialog.showModal();
+    });
+  }
+
+  _closeUploadDialog() {
+    if (this._uploadState?.uploading) return;
+
+    const dialog = this.shadowRoot?.querySelector("dialog.upload-dialog");
+
+    if (dialog?.open) dialog.close();
+    this._uploadState = { ...this._uploadState, open: false, items: [], error: "" };
+  }
+
+  _handleUploadDialogClosed() {
+    if (this._uploadState?.open) {
+      this._uploadState = { ...this._uploadState, open: false, uploading: false };
+    }
+  }
+
+  _handleUploadDialogCancel(event) {
+    if (this._uploadState?.uploading) event.preventDefault();
+  }
+
+  _handleUploadDragOver(event) {
+    event.preventDefault();
+    if (!this._uploadState.dragOver) {
+      this._uploadState = { ...this._uploadState, dragOver: true };
+    }
+  }
+
+  _handleUploadDragLeave() {
+    if (this._uploadState.dragOver) {
+      this._uploadState = { ...this._uploadState, dragOver: false };
+    }
+  }
+
+  _handleUploadDrop(event) {
+    event.preventDefault();
+    this._uploadState = { ...this._uploadState, dragOver: false };
+    if (event.dataTransfer?.files?.length) {
+      this._addUploadFiles(event.dataTransfer.files);
+    }
+  }
+
+  _handleUploadFileSelect(event) {
+    if (event.target?.files?.length) {
+      this._addUploadFiles(event.target.files);
+      event.target.value = "";
+    }
+  }
+
+  _addUploadFiles(fileList) {
+    const fileNameFormat = this.config?.upload?.file_name_format || "YYYYMMDDHHmmss";
+    const lockedDate = this._uploadState.lockedDate;
+    const newItems = Array.from(fileList).map(file => {
+      const inferred = inferDateFromFile(file, fileNameFormat, lockedDate);
+
+      return {
+        file,
+        dateStr: inferred.format("YYYY-MM-DD"),
+        timeStr: inferred.format("HH:mm:ss"),
+        note: ""
+      };
+    });
+
+    this._uploadState = {
+      ...this._uploadState,
+      items: [...this._uploadState.items, ...newItems],
+      error: "",
+      canFallbackToRoot: false
+    };
+  }
+
+  _removeUploadItem(index) {
+    const items = this._uploadState.items.filter((_, idx) => idx !== index);
+
+    this._uploadState = { ...this._uploadState, items, error: "", canFallbackToRoot: false };
+  }
+
+  _updateUploadItem(index, patch) {
+    const items = this._uploadState.items.map((item, idx) => idx === index ? { ...item, ...patch } : item);
+
+    this._uploadState = { ...this._uploadState, items, error: "", canFallbackToRoot: false };
+  }
+
+  _retryUploadToRoot() {
+    this._uploadState = { ...this._uploadState, forceRoot: true, error: "", canFallbackToRoot: false };
+    this._startUpload();
+  }
+
+  _cancelActiveUpload() {
+    this._activeUploadXhr?.abort();
+    this._activeUploadXhr = null;
+  }
+
+  async _startUpload() {
+    const uploadConfig = this.config?.upload || {};
+    const previews = computeQueuePreview(this._uploadState.items, uploadConfig);
+
+    if (previews.length === 0 || this._uploadState.uploading) return;
+
+    this._uploadState = {
+      ...this._uploadState,
+      uploading: true,
+      completedCount: 0,
+      currentProgress: 0,
+      error: "",
+      canFallbackToRoot: false
+    };
+
+    let lastUploadedBaseName = "";
+
+    try {
+      for (let idx = 0; idx < previews.length; idx++) {
+        const item = previews[idx];
+        const targetDir = await ensureTargetDirectory(
+          this._hass,
+          uploadConfig.target_path || "media-source://media_source/local",
+          item.folderName,
+          uploadConfig.mkdir_service,
+          this._uploadState.forceRoot
+        );
+        const safeFileName = await resolveUniqueFileName(this._hass, targetDir, item.targetFileName);
+
+        await uploadFileToHA({
+          hass: this._hass,
+          file: item.file,
+          targetFileName: safeFileName,
+          mediaContentId: targetDir,
+          registerXhr: xhr => { this._activeUploadXhr = xhr; },
+          onProgress: percent => {
+            this._uploadState = { ...this._uploadState, currentProgress: percent };
+          }
+        });
+
+        const dotIndex = safeFileName.lastIndexOf(".");
+
+        lastUploadedBaseName = dotIndex > 0 ? safeFileName.slice(0, dotIndex) : safeFileName;
+        this._uploadState = { ...this._uploadState, completedCount: idx + 1, currentProgress: 0 };
+      }
+
+      this._activeUploadXhr = null;
+      this._mediaResolveCache.clear();
+      this._clearBrowseCache();
+      this._uploadState = { ...this._uploadState, uploading: false };
+      this._closeUploadDialog();
+
+      await this._loadResources(this._hass);
+
+      if (lastUploadedBaseName && Array.isArray(this.resources)) {
+        const uploadedIndex = this.resources.findIndex(res => res.name === lastUploadedBaseName);
+
+        if (uploadedIndex >= 0) this._selectResource(uploadedIndex);
+      }
+    } catch (error) {
+      this._activeUploadXhr = null;
+      const isAborted = error?.message === "UPLOAD_ABORTED";
+
+      this._uploadState = {
+        ...this._uploadState,
+        uploading: false,
+        currentProgress: 0,
+        error: isAborted ? "上传已取消" : (error?.message || "上传失败，请重试"),
+        canFallbackToRoot: Boolean(error?.canFallbackToRoot)
+      };
+    }
+  }
+
+  _openDeleteConfirm(resource) {
+    if (!this._canDelete(resource)) return;
+
+    this._deleteTarget = resource;
+    this._deleteError = "";
+    this._isDeleting = false;
+    this.updateComplete.then(() => {
+      const dialog = this.shadowRoot?.querySelector("dialog.confirm-dialog");
+
+      if (dialog && !dialog.open) dialog.showModal();
+      this.shadowRoot?.querySelector("dialog.confirm-dialog .btn-cancel")?.focus();
+    });
+  }
+
+  _closeDeleteConfirm() {
+    if (this._isDeleting) return;
+
+    const dialog = this.shadowRoot?.querySelector("dialog.confirm-dialog");
+
+    if (dialog?.open) dialog.close();
+    this._deleteTarget = null;
+    this._deleteError = "";
+  }
+
+  async _confirmDelete() {
+    const target = this._deleteTarget;
+
+    if (!target?.mediaContentId || this._isDeleting) return;
+
+    this._isDeleting = true;
+    this._deleteError = "";
+
+    try {
+      await this._hass.callWS({
+        type: "media_source/local_source/remove",
+        media_content_id: target.mediaContentId
+      });
+
+      this._clearBrowseCache();
+      this._mediaResolveCache.delete(target.mediaContentId);
+      const targetKey = this._getResourceKey(target);
+
+      this.resources = (this.resources || []).filter(item => this._getResourceKey(item) !== targetKey);
+      this._isDeleting = false;
+      this._closeDeleteConfirm();
+
+      if (this.resources.length === 0) {
+        this.currentResourceIndex = 0;
+        this._closeViewer();
+      } else {
+        const nextIndex = Math.min(this.currentResourceIndex, this.resources.length - 1);
+
+        this._selectResource(nextIndex);
+      }
+    } catch (error) {
+      this._isDeleting = false;
+      this._deleteError = error?.message || "删除失败，请检查权限或文件状态后重试";
+    }
+  }
+
+  _renderConfirmDialog() {
+    const target = this._deleteTarget;
+    const fileName = target ? (target.extension ? `${target.name}.${target.extension}` : target.name) : "";
+    const captureTime = target?.date ? target.date.format("YYYY-MM-DD HH:mm:ss") : "未知";
+
+    return html`
+      <dialog class="confirm-dialog" @close="${() => { if (!this._isDeleting) this._deleteTarget = null; }}" @cancel="${e => { if (this._isDeleting) e.preventDefault(); }}">
+        ${target ? html`
+          <div class="dialog-header">
+            <div class="dialog-title danger">
+              <ha-icon icon="mdi:alert-outline"></ha-icon>
+              <span>确认删除录像</span>
+            </div>
+          </div>
+          <div class="dialog-body">
+            <p class="confirm-warning">此操作将永久删除本地文件，<strong>删除后不可恢复</strong>：</p>
+            <div class="confirm-meta">
+              <div><span>文件名：</span><code>${fileName}</code></div>
+              <div><span>拍摄时间：</span><span>${captureTime}</span></div>
+              <div><span>路径：</span><code>${target.mediaContentId}</code></div>
+            </div>
+            ${this._deleteError ? html`<div class="upload-error" role="alert"><ha-icon icon="mdi:alert-circle-outline"></ha-icon><div>${this._deleteError}</div></div>` : html``}
+          </div>
+          <div class="dialog-footer">
+            <button type="button" class="btn-secondary btn-cancel" ?disabled=${this._isDeleting} @click="${this._closeDeleteConfirm}">取消</button>
+            <button type="button" class="btn-danger" ?disabled=${this._isDeleting} @click="${this._confirmDelete}">
+              ${this._isDeleting ? "正在删除..." : "确认删除"}
+            </button>
+          </div>
+        ` : html``}
+      </dialog>
+    `;
+  }
+
 
 
 
@@ -2326,6 +2835,7 @@ class GalleryCard extends LitElement {
         background: var(--gallery-surface);
       }
       .date-chips {
+        position: relative;
         flex: none;
         display: flex;
         gap: 6px;
@@ -2381,6 +2891,18 @@ class GalleryCard extends LitElement {
         border: 0;
         opacity: 0;
         cursor: pointer;
+      }
+      .date-picker-anchor {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        width: 1px;
+        height: 1px;
+        margin: 0;
+        padding: 0;
+        border: 0;
+        opacity: 0;
+        pointer-events: none;
       }
       .error-list {
         flex: none;
@@ -2840,6 +3362,15 @@ class GalleryCard extends LitElement {
           overflow: visible;
         }
       }
+      @container gallery-card (max-width: 419px) {
+        ha-card[class] .info-relative {
+          display: none;
+        }
+        ha-card[class] .icon-button {
+          width: 34px;
+          height: 34px;
+        }
+      }
       @container gallery-card (max-width: 320px) {
         ha-card[class] .resource-menu {
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -3023,6 +3554,332 @@ class GalleryCard extends LitElement {
         .viewer .viewer-nav {
           display: none;
         }
+      }
+
+      .empty-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 10px;
+        margin-top: 8px;
+      }
+      .empty-action.primary {
+        border-color: var(--gallery-accent);
+        background: var(--gallery-accent);
+        color: #fff;
+      }
+      .icon-button.danger:hover {
+        color: var(--error-color, #db4437);
+      }
+
+      /* Watchdog alert banner */
+      .watchdog-banner {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 8px 12px;
+        font-size: 13px;
+        line-height: 1.4;
+        border-bottom: 1px solid var(--gallery-divider);
+        background: rgba(255, 152, 0, 0.14);
+        color: var(--gallery-text);
+        grid-column: 1 / -1;
+      }
+      .watchdog-banner.error {
+        background: rgba(219, 68, 55, 0.14);
+      }
+      .watchdog-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-width: 0;
+        flex: 1 1 auto;
+      }
+      .watchdog-banner.warning .watchdog-info ha-icon {
+        color: var(--warning-color, #ffa600);
+        flex: none;
+      }
+      .watchdog-banner.error .watchdog-info ha-icon {
+        color: var(--error-color, #db4437);
+        flex: none;
+      }
+      .watchdog-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .watchdog-actions {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        flex: none;
+      }
+      .watchdog-btn {
+        border: 1px solid var(--gallery-divider);
+        background: var(--gallery-surface);
+        color: var(--gallery-text);
+        border-radius: 999px;
+        padding: 4px 10px;
+        font-size: 12px;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .watchdog-btn.primary {
+        border-color: var(--gallery-accent);
+        background: var(--gallery-accent);
+        color: #fff;
+      }
+
+      /* Upload & Delete confirmation dialogs */
+      dialog.upload-dialog,
+      dialog.confirm-dialog {
+        width: min(560px, calc(100vw - 24px));
+        max-height: calc(100dvh - 32px);
+        padding: 0;
+        border: 1px solid var(--gallery-divider);
+        border-radius: 16px;
+        background: var(--gallery-surface);
+        color: var(--gallery-text);
+        box-shadow: 0 20px 50px rgba(0, 0, 0, 0.35);
+        overflow: hidden;
+      }
+      dialog.confirm-dialog {
+        width: min(440px, calc(100vw - 24px));
+      }
+      dialog.upload-dialog[open],
+      dialog.confirm-dialog[open] {
+        display: flex;
+        flex-direction: column;
+      }
+      dialog.upload-dialog::backdrop,
+      dialog.confirm-dialog::backdrop {
+        background: rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(2px);
+      }
+      .dialog-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 16px;
+        border-bottom: 1px solid var(--gallery-divider);
+      }
+      .dialog-title {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 16px;
+        font-weight: 600;
+      }
+      .dialog-title.danger ha-icon {
+        color: var(--error-color, #db4437);
+      }
+      .dialog-body {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        padding: 16px;
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+      }
+      .dialog-footer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        padding: 12px 16px;
+        border-top: 1px solid var(--gallery-divider);
+      }
+      .dropzone {
+        border: 2px dashed var(--gallery-divider);
+        border-radius: 12px;
+        padding: 22px 16px;
+        text-align: center;
+        cursor: pointer;
+        transition: border-color 0.2s, background 0.2s;
+      }
+      .dropzone:hover,
+      .dropzone.drag-over {
+        border-color: var(--gallery-accent);
+        background: rgba(var(--gallery-accent-rgb), 0.08);
+      }
+      .dropzone ha-icon {
+        --mdc-icon-size: 36px;
+        color: var(--gallery-accent);
+      }
+      .dropzone-text {
+        margin-top: 8px;
+        font-size: 14px;
+        font-weight: 500;
+      }
+      .dropzone-hint {
+        margin-top: 4px;
+        font-size: 12px;
+        color: var(--gallery-text-secondary);
+      }
+      .upload-queue {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+      .upload-item {
+        border: 1px solid var(--gallery-divider);
+        border-radius: 10px;
+        padding: 10px 12px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .upload-item-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .upload-item-name {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 13px;
+        font-weight: 500;
+      }
+      .upload-item-size {
+        font-size: 12px;
+        color: var(--gallery-text-secondary);
+        flex: none;
+      }
+      .icon-button.small {
+        width: 28px;
+        height: 28px;
+      }
+      .upload-item-fields {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 8px;
+      }
+      @media (max-width: 520px) {
+        .upload-item-fields {
+          grid-template-columns: 1fr 1fr;
+        }
+        .upload-item-fields .field-note {
+          grid-column: 1 / -1;
+        }
+      }
+      .field-group {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12px;
+        color: var(--gallery-text-secondary);
+      }
+      .field-group input {
+        box-sizing: border-box;
+        width: 100%;
+        padding: 6px 8px;
+        border: 1px solid var(--gallery-divider);
+        border-radius: 8px;
+        background: var(--gallery-surface);
+        color: var(--gallery-text);
+        font: inherit;
+        font-size: 13px;
+      }
+      .upload-item-preview {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: var(--gallery-text-secondary);
+        word-break: break-all;
+      }
+      .upload-item-preview ha-icon {
+        --mdc-icon-size: 16px;
+        flex: none;
+        color: var(--gallery-accent);
+      }
+      .upload-progress-box {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+      .upload-progress-label {
+        font-size: 13px;
+      }
+      .upload-progress-track {
+        height: 8px;
+        border-radius: 999px;
+        background: var(--gallery-placeholder);
+        overflow: hidden;
+      }
+      .upload-progress-fill {
+        height: 100%;
+        background: var(--gallery-accent);
+        transition: width 0.15s linear;
+      }
+      .upload-error {
+        display: flex;
+        align-items: flex-start;
+        gap: 8px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(219, 68, 55, 0.12);
+        color: var(--error-color, #db4437);
+        font-size: 13px;
+      }
+      .upload-error-content {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .confirm-warning {
+        margin: 0;
+        font-size: 14px;
+      }
+      .confirm-meta {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: var(--gallery-placeholder);
+        font-size: 13px;
+        word-break: break-all;
+      }
+      .confirm-meta code {
+        font-family: monospace;
+      }
+      .btn-primary,
+      .btn-secondary,
+      .btn-danger {
+        border-radius: 999px;
+        padding: 8px 16px;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        border: 1px solid transparent;
+      }
+      .btn-secondary {
+        border-color: var(--gallery-divider);
+        background: transparent;
+        color: var(--gallery-text);
+      }
+      .btn-secondary.small {
+        padding: 4px 10px;
+        font-size: 12px;
+        align-self: flex-start;
+      }
+      .btn-primary {
+        background: var(--gallery-accent);
+        color: #fff;
+      }
+      .btn-danger {
+        background: var(--error-color, #db4437);
+        color: #fff;
+      }
+      .btn-primary:disabled,
+      .btn-secondary:disabled,
+      .btn-danger:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
 
       @keyframes gallery-fade-in {

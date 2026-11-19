@@ -1,0 +1,838 @@
+# ==============================================================================
+# Gallery Card 2026 - 门锁录像监控 & 多渠道告警配置 HA Package
+# 使用方法：
+# 1. 将本文件复制到 Home Assistant 配置目录的 packages/ 目录下（如 /config/packages/door_lock_watchdog.yaml）
+# 2. 在 configuration.yaml 的 homeassistant: 下启用 packages: !include_dir_named packages
+#    注：下方已包含 `system_log: fire_event: true`；若你的 configuration.yaml 已有 `system_log:` 配置，
+#    请将 `fire_event: true` 合并到原配置中并删除本文件中的 `system_log:` 段。
+# 3. 修改下方【按需修改】处的录像目录路径（如 /media 或 /media/doorbell）
+# 4. 重启 Home Assistant 后，导入 docs/ha-watchdog-dashboard.yaml 到仪表板，
+#    在页面中点击「填充默认参数」，再按需勾选提醒事项与推送渠道即可（后续改参数免重启）。
+# ==============================================================================
+
+# 如 configuration.yaml 已有 system_log:，请合并 fire_event: true 到主配置并注释此处
+system_log:
+  fire_event: true
+
+# ------------------------------------------------------------------------------
+# 1. 提醒事项开关、渠道开关与持久化配置 Helper
+# 说明：不设置 initial:，确保用户在仪表板修改的开关、Key 与参数在重启 HA 后不丢失
+# ------------------------------------------------------------------------------
+input_boolean:
+  door_lock_watchdog_enabled:
+    name: 门锁录像监控总开关
+    icon: mdi:cctv
+
+  # 提醒事项开关
+  door_lock_alert_error_enabled:
+    name: 提醒 - 实时转存报错
+    icon: mdi:alert-octagon-outline
+
+  door_lock_alert_stale_enabled:
+    name: 提醒 - 长时间无新录像（漏录超时）
+    icon: mdi:clock-alert-outline
+
+  door_lock_alert_mount_enabled:
+    name: 提醒 - 录像目录挂载异常
+    icon: mdi:folder-alert-outline
+
+  door_lock_alert_recovery_enabled:
+    name: 提醒 - 录像恢复正常通知
+    icon: mdi:check-circle-outline
+
+  # 推送渠道开关
+  door_lock_channel_ha_persistent_enabled:
+    name: 渠道 - HA 站内持久通知
+    icon: mdi:bell-ring-outline
+
+  door_lock_channel_bark_enabled:
+    name: 渠道 - Bark 推送
+    icon: mdi:cellphone-message
+
+  door_lock_channel_pushplus_enabled:
+    name: 渠道 - PushPlus 微信推送
+    icon: mdi:wechat
+
+  door_lock_channel_webhook_enabled:
+    name: 渠道 - 自定义 Webhook
+    icon: mdi:webhook
+
+  # 内部告警状态标记
+  door_lock_watchdog_alerting:
+    name: 门锁监控当前处于告警状态
+    icon: mdi:alert-circle-outline
+
+input_number:
+  door_lock_watchdog_timeout_hours:
+    name: 无录像超时告警阈值（小时）
+    icon: mdi:clock-alert-outline
+    min: 1
+    max: 168
+    step: 1
+    unit_of_measurement: h
+
+  door_lock_watchdog_cooldown_hours:
+    name: 重复告警冷却间隔（小时）
+    icon: mdi:timer-sand
+    min: 1
+    max: 72
+    step: 1
+    unit_of_measurement: h
+
+  door_lock_alert_baseline_epoch:
+    name: 告警触发时的录像时间戳基线
+    icon: mdi:history
+    min: 0
+    max: 9999999999
+    step: 1
+    mode: box
+
+input_datetime:
+  door_lock_watchdog_quiet_start:
+    name: 告警免打扰开始时间
+    has_date: false
+    has_time: true
+
+  door_lock_watchdog_quiet_end:
+    name: 告警免打扰结束时间
+    has_date: false
+    has_time: true
+
+  door_lock_last_notified:
+    name: 上次超时/挂载告警推送时间
+    has_date: true
+    has_time: true
+
+input_select:
+  door_lock_bark_level:
+    name: Bark 推送级别
+    icon: mdi:priority-high
+    options:
+      - timeSensitive
+      - active
+      - passive
+      - critical
+
+  door_lock_pushplus_channel:
+    name: PushPlus 发送渠道
+    icon: mdi:send-variant-outline
+    options:
+      - wechat
+      - webhook
+      - cp
+      - mail
+
+  door_lock_pushplus_template:
+    name: PushPlus 消息格式
+    icon: mdi:code-braces
+    options:
+      - txt
+      - html
+      - markdown
+      - json
+
+input_text:
+  door_lock_last_error:
+    name: 最近一次门锁自动化报错
+    icon: mdi:message-alert-outline
+    max: 255
+
+  door_lock_error_keywords:
+    name: 实时报错匹配关键词（逗号分隔）
+    icon: mdi:filter-outline
+    max: 255
+
+  # Bark 配置
+  door_lock_bark_server:
+    name: Bark 服务器地址
+    icon: mdi:server-network
+    max: 255
+
+  door_lock_bark_key:
+    name: Bark Device Key
+    icon: mdi:key-variant
+    mode: password
+    max: 255
+
+  door_lock_bark_group:
+    name: Bark 消息分组
+    icon: mdi:folder-outline
+    max: 64
+
+  door_lock_bark_sound:
+    name: Bark 提示音（可选，留空用默认）
+    icon: mdi:volume-high
+    max: 64
+
+  # PushPlus 配置
+  door_lock_pushplus_token:
+    name: PushPlus Token
+    icon: mdi:key-variant
+    mode: password
+    max: 255
+
+  door_lock_pushplus_topic:
+    name: PushPlus 群组编码（可选）
+    icon: mdi:account-group-outline
+    max: 64
+
+  # 自定义 Webhook 配置
+  door_lock_webhook_url:
+    name: 自定义 Webhook URL
+    icon: mdi:link-variant
+    mode: password
+    max: 255
+
+  door_lock_webhook_title_field:
+    name: Webhook 标题字段名（默认 title）
+    icon: mdi:format-title
+    max: 64
+
+  door_lock_webhook_body_field:
+    name: Webhook 正文字段名（默认 body）
+    icon: mdi:text-box-outline
+    max: 64
+
+  door_lock_webhook_prefix:
+    name: Webhook 正文前缀（可选）
+    icon: mdi:tag-text-outline
+    max: 64
+
+# ------------------------------------------------------------------------------
+# 2. 录像目录巡检传感器 & 超时/挂载异常判断
+# 【按需修改】请将 /media 替换为 HA 容器内门锁录像的实际根目录（如 /media/doorbell）
+# ------------------------------------------------------------------------------
+command_line:
+  - sensor:
+      name: door_lock_latest_recording
+      unique_id: door_lock_latest_recording
+      scan_interval: 900 # 每 15 分钟巡检一次
+      command: |-
+        python3 -c "
+        import os, json, datetime
+        root = '/media'
+        latest_ts, latest_name, file_count = 0, '', 0
+        if not os.path.isdir(root):
+            print(json.dumps({'status': 'dir_missing', 'timestamp': 'unknown', 'epoch': 0, 'file': '', 'file_count': 0}))
+        else:
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [d for d in dirnames if not d.startswith('.') and d != 'tmp']
+                for fn in filenames:
+                    if fn.startswith('.') or not fn.lower().endswith('.mp4'):
+                        continue
+                    fp = os.path.join(dirpath, fn)
+                    try:
+                        st = os.stat(fp)
+                        if st.st_size <= 0:
+                            continue
+                        file_count += 1
+                        if st.st_mtime > latest_ts:
+                            latest_ts, latest_name = st.st_mtime, fn
+                    except OSError:
+                        pass
+            status = 'ok' if file_count > 0 else 'empty'
+            iso = datetime.datetime.fromtimestamp(latest_ts, datetime.timezone.utc).isoformat() if latest_ts > 0 else 'unknown'
+            print(json.dumps({'status': status, 'timestamp': iso, 'epoch': latest_ts, 'file': latest_name, 'file_count': file_count}))
+        "
+      value_template: "{{ value_json.timestamp }}"
+      json_attributes:
+        - status
+        - epoch
+        - file
+        - file_count
+
+template:
+  - binary_sensor:
+      - name: door_lock_recording_stale
+        unique_id: door_lock_recording_stale
+        device_class: problem
+        state: >-
+          {% set enabled = is_state('input_boolean.door_lock_watchdog_enabled', 'on') and is_state('input_boolean.door_lock_alert_stale_enabled', 'on') %}
+          {% set status = state_attr('sensor.door_lock_latest_recording', 'status') | default('unknown') %}
+          {% set epoch = state_attr('sensor.door_lock_latest_recording', 'epoch') | float(0) %}
+          {% set timeout_h = states('input_number.door_lock_watchdog_timeout_hours') | float(24) %}
+          {% set timeout_sec = (timeout_h if timeout_h > 0 else 24) * 3600 %}
+          {{ enabled and status == 'ok' and epoch > 0 and (now().timestamp() - epoch) > timeout_sec }}
+
+      - name: door_lock_recording_mount_error
+        unique_id: door_lock_recording_mount_error
+        device_class: problem
+        state: >-
+          {% set enabled = is_state('input_boolean.door_lock_watchdog_enabled', 'on') and is_state('input_boolean.door_lock_alert_mount_enabled', 'on') %}
+          {% set status = state_attr('sensor.door_lock_latest_recording', 'status') | default('unknown') %}
+          {{ enabled and status == 'dir_missing' }}
+
+# ------------------------------------------------------------------------------
+# 3. 多渠道推送命令 & 前端补传安全建目录命令
+# ------------------------------------------------------------------------------
+rest_command:
+  door_lock_bark_notify:
+    url: >-
+      {% set server = states('input_text.door_lock_bark_server') | trim %}
+      {% if not server or server in ['unknown', 'unavailable'] %}
+        {% set server = 'https://api.day.app' %}
+      {% endif %}
+      {% set key = states('input_text.door_lock_bark_key') | trim %}
+      {{ server.rstrip('/') ~ '/' ~ key }}
+    method: POST
+    content_type: "application/json; charset=utf-8"
+    payload: >-
+      {% set grp = states('input_text.door_lock_bark_group') | trim %}
+      {% if not grp or grp in ['unknown', 'unavailable'] %}
+        {% set grp = '门锁监控' %}
+      {% endif %}
+      {% set lvl = level | default('') %}
+      {% if not lvl %}
+        {% set lvl = states('input_select.door_lock_bark_level') %}
+        {% if not lvl or lvl in ['unknown', 'unavailable'] %}
+          {% set lvl = 'timeSensitive' %}
+        {% endif %}
+      {% endif %}
+      {% set data = {
+        'title': title,
+        'body': body,
+        'group': grp,
+        'level': lvl
+      } %}
+      {% set snd = states('input_text.door_lock_bark_sound') | trim %}
+      {% if snd and snd not in ['unknown', 'unavailable'] %}
+        {% set data = dict(data, sound=snd) %}
+      {% endif %}
+      {% if url | default('') %}
+        {% set data = dict(data, url=url) %}
+      {% endif %}
+      {{ data | tojson }}
+
+  door_lock_pushplus_notify:
+    url: "https://www.pushplus.plus/send"
+    method: POST
+    content_type: "application/json; charset=utf-8"
+    payload: >-
+      {% set ch = states('input_select.door_lock_pushplus_channel') %}
+      {% if not ch or ch in ['unknown', 'unavailable'] %}
+        {% set ch = 'wechat' %}
+      {% endif %}
+      {% set tpl = states('input_select.door_lock_pushplus_template') %}
+      {% if not tpl or tpl in ['unknown', 'unavailable'] %}
+        {% set tpl = 'txt' %}
+      {% endif %}
+      {% set data = {
+        'token': states('input_text.door_lock_pushplus_token') | trim,
+        'title': title,
+        'content': body,
+        'channel': ch,
+        'template': tpl
+      } %}
+      {% set tp = states('input_text.door_lock_pushplus_topic') | trim %}
+      {% if tp and tp not in ['unknown', 'unavailable'] %}
+        {% set data = dict(data, topic=tp) %}
+      {% endif %}
+      {{ data | tojson }}
+
+  door_lock_webhook_notify:
+    url: "{{ states('input_text.door_lock_webhook_url') | trim }}"
+    method: POST
+    content_type: "application/json; charset=utf-8"
+    payload: >-
+      {% set tk = states('input_text.door_lock_webhook_title_field') | trim %}
+      {% if not tk or tk in ['unknown', 'unavailable'] %}
+        {% set tk = 'title' %}
+      {% endif %}
+      {% set bk = states('input_text.door_lock_webhook_body_field') | trim %}
+      {% if not bk or bk in ['unknown', 'unavailable'] %}
+        {% set bk = 'body' %}
+      {% endif %}
+      {% set pfx = states('input_text.door_lock_webhook_prefix') %}
+      {% if not pfx or pfx in ['unknown', 'unavailable'] %}
+        {% set pfx = '' %}
+      {% endif %}
+      {{ {tk: title, bk: pfx ~ body} | tojson }}
+
+shell_command:
+  # 【按需修改】若录像目录不是 /media，请将下方 '/media' 改为实际录像根目录
+  # 严格校验目录名仅允许字母/数字/下划线/短横线（1~32位），防止路径穿越与命令注入
+  gallery_card_mkdir: >-
+    python3 -c "import os, re, sys; name = sys.argv[1]; assert re.fullmatch(r'[A-Za-z0-9_-]{1,32}', name), 'Invalid folder name'; os.makedirs(os.path.join('/media', name), exist_ok=True)" "{{ folder }}"
+
+# ------------------------------------------------------------------------------
+# 4. 统一分发、单渠道测试与辅助脚本
+# ------------------------------------------------------------------------------
+script:
+  door_lock_send_notification:
+    alias: 门锁监控 - 统一多渠道推送
+    mode: queued
+    max: 10
+    fields:
+      title:
+        description: 通知标题
+        example: "🚨 门锁录像自动化报错"
+      body:
+        description: 通知正文
+        example: "请检查门锁录制脚本或 NAS 存储。"
+      bark_level:
+        description: 可选，覆盖 Bark 推送级别
+        example: "timeSensitive"
+      notification_id:
+        description: 可选，HA 站内通知 ID
+        example: "door_lock_watchdog_error"
+    sequence:
+      - if:
+          - condition: state
+            entity_id: input_boolean.door_lock_channel_ha_persistent_enabled
+            state: "on"
+        then:
+          - service: persistent_notification.create
+            continue_on_error: true
+            data:
+              notification_id: "{{ notification_id | default('door_lock_watchdog_alert') }}"
+              title: "{{ title }}"
+              message: "{{ body }}"
+      - if:
+          - condition: state
+            entity_id: input_boolean.door_lock_channel_bark_enabled
+            state: "on"
+          - condition: template
+            value_template: >-
+              {% set k = states('input_text.door_lock_bark_key') | trim %}
+              {{ k | length > 0 and k not in ['unknown', 'unavailable'] }}
+        then:
+          - service: rest_command.door_lock_bark_notify
+            continue_on_error: true
+            data:
+              title: "{{ title }}"
+              body: "{{ body }}"
+              level: "{{ bark_level | default('') }}"
+      - if:
+          - condition: state
+            entity_id: input_boolean.door_lock_channel_pushplus_enabled
+            state: "on"
+          - condition: template
+            value_template: >-
+              {% set t = states('input_text.door_lock_pushplus_token') | trim %}
+              {{ t | length > 0 and t not in ['unknown', 'unavailable'] }}
+        then:
+          - service: rest_command.door_lock_pushplus_notify
+            continue_on_error: true
+            data:
+              title: "{{ title }}"
+              body: "{{ body }}"
+      - if:
+          - condition: state
+            entity_id: input_boolean.door_lock_channel_webhook_enabled
+            state: "on"
+          - condition: template
+            value_template: >-
+              {% set u = states('input_text.door_lock_webhook_url') | trim %}
+              {{ u.startswith('http://') or u.startswith('https://') }}
+        then:
+          - service: rest_command.door_lock_webhook_notify
+            continue_on_error: true
+            data:
+              title: "{{ title }}"
+              body: "{{ body }}"
+
+  door_lock_test_bark:
+    alias: 门锁监控 - 测试 Bark 推送
+    mode: single
+    sequence:
+      - if:
+          - condition: template
+            value_template: >-
+              {% set k = states('input_text.door_lock_bark_key') | trim %}
+              {{ k | length == 0 or k in ['unknown', 'unavailable'] }}
+        then:
+          - service: persistent_notification.create
+            data:
+              notification_id: door_lock_test_result
+              title: "⚠️ Bark 测试未发送"
+              message: "请先在配置页面填写 Bark Device Key。"
+        else:
+          - service: rest_command.door_lock_bark_notify
+            continue_on_error: true
+            data:
+              title: "✅ 门锁监控 Bark 测试"
+              body: "Bark 渠道配置正常（{{ now().strftime('%Y-%m-%d %H:%M:%S') }}）。"
+              level: "{{ states('input_select.door_lock_bark_level') }}"
+
+  door_lock_test_pushplus:
+    alias: 门锁监控 - 测试 PushPlus 推送
+    mode: single
+    sequence:
+      - if:
+          - condition: template
+            value_template: >-
+              {% set t = states('input_text.door_lock_pushplus_token') | trim %}
+              {{ t | length == 0 or t in ['unknown', 'unavailable'] }}
+        then:
+          - service: persistent_notification.create
+            data:
+              notification_id: door_lock_test_result
+              title: "⚠️ PushPlus 测试未发送"
+              message: "请先在配置页面填写 PushPlus Token。"
+        else:
+          - service: rest_command.door_lock_pushplus_notify
+            continue_on_error: true
+            data:
+              title: "✅ 门锁监控 PushPlus 测试"
+              body: "PushPlus 渠道配置正常（{{ now().strftime('%Y-%m-%d %H:%M:%S') }}）。"
+
+  door_lock_test_webhook:
+    alias: 门锁监控 - 测试自定义 Webhook 推送
+    mode: single
+    sequence:
+      - if:
+          - condition: template
+            value_template: >-
+              {% set u = states('input_text.door_lock_webhook_url') | trim %}
+              {{ not (u.startswith('http://') or u.startswith('https://')) }}
+        then:
+          - service: persistent_notification.create
+            data:
+              notification_id: door_lock_test_result
+              title: "⚠️ Webhook 测试未发送"
+              message: "请先在配置页面填写以 http:// 或 https:// 开头的 Webhook URL。"
+        else:
+          - service: rest_command.door_lock_webhook_notify
+            continue_on_error: true
+            data:
+              title: "✅ 门锁监控 Webhook 测试"
+              body: "自定义 Webhook 渠道配置正常（{{ now().strftime('%Y-%m-%d %H:%M:%S') }}）。"
+
+  door_lock_test_all_channels:
+    alias: 门锁监控 - 测试全部已启用渠道
+    mode: single
+    sequence:
+      - service: script.door_lock_send_notification
+        data:
+          notification_id: door_lock_test_result
+          title: "✅ 门锁监控全渠道测试"
+          body: "这是一条测试通知，当前时间 {{ now().strftime('%Y-%m-%d %H:%M:%S') }}。"
+          bark_level: "active"
+
+  door_lock_refresh_recording:
+    alias: 门锁监控 - 立即巡检录像目录
+    mode: single
+    sequence:
+      - service: homeassistant.update_entity
+        target:
+          entity_id: sensor.door_lock_latest_recording
+
+  door_lock_clear_last_error:
+    alias: 门锁监控 - 清除最近报错
+    mode: single
+    sequence:
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.door_lock_last_error
+        data:
+          value: ""
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: door_lock_watchdog_error
+
+  door_lock_init_defaults:
+    alias: 门锁监控 - 填充推荐默认参数（保留密钥）
+    mode: single
+    sequence:
+      - service: input_boolean.turn_on
+        target:
+          entity_id:
+            - input_boolean.door_lock_watchdog_enabled
+            - input_boolean.door_lock_alert_error_enabled
+            - input_boolean.door_lock_alert_stale_enabled
+            - input_boolean.door_lock_alert_mount_enabled
+            - input_boolean.door_lock_alert_recovery_enabled
+            - input_boolean.door_lock_channel_ha_persistent_enabled
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.door_lock_watchdog_timeout_hours
+        data:
+          value: 24
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.door_lock_watchdog_cooldown_hours
+        data:
+          value: 12
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.door_lock_watchdog_quiet_start
+        data:
+          time: "23:00:00"
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.door_lock_watchdog_quiet_end
+        data:
+          time: "07:30:00"
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.door_lock_error_keywords
+        data:
+          value: "door_lock,video_doorbell,save_video,gallery_card,门锁"
+      - if:
+          - condition: template
+            value_template: "{{ states('input_text.door_lock_bark_server') in ['', 'unknown', 'unavailable'] }}"
+        then:
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.door_lock_bark_server
+            data:
+              value: "https://api.day.app"
+      - if:
+          - condition: template
+            value_template: "{{ states('input_text.door_lock_bark_group') in ['', 'unknown', 'unavailable'] }}"
+        then:
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.door_lock_bark_group
+            data:
+              value: "门锁监控"
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.door_lock_bark_level
+        data:
+          option: "timeSensitive"
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.door_lock_pushplus_channel
+        data:
+          option: "wechat"
+      - service: input_select.select_option
+        target:
+          entity_id: input_select.door_lock_pushplus_template
+        data:
+          option: "txt"
+      - if:
+          - condition: template
+            value_template: "{{ states('input_text.door_lock_webhook_title_field') in ['', 'unknown', 'unavailable'] }}"
+        then:
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.door_lock_webhook_title_field
+            data:
+              value: "title"
+      - if:
+          - condition: template
+            value_template: "{{ states('input_text.door_lock_webhook_body_field') in ['', 'unknown', 'unavailable'] }}"
+        then:
+          - service: input_text.set_value
+            target:
+              entity_id: input_text.door_lock_webhook_body_field
+            data:
+              value: "body"
+
+# ------------------------------------------------------------------------------
+# 5. 告警与恢复自动化
+# ------------------------------------------------------------------------------
+automation:
+  # 5.1 定时静默漏录检测（每 30 分钟检查，支持自定义冷却与免打扰）
+  - id: door_lock_watchdog_stale_alert
+    alias: 门锁监控 - 漏录超时告警
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "/30"
+      - platform: state
+        entity_id: binary_sensor.door_lock_recording_stale
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.door_lock_watchdog_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.door_lock_alert_stale_enabled
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.door_lock_recording_stale
+        state: "on"
+      # 免打扰时段判断（支持跨午夜，如 23:00 ~ 07:30）
+      - condition: template
+        value_template: >-
+          {% set now_t = now().strftime('%H:%M:%S') %}
+          {% set s = states('input_datetime.door_lock_watchdog_quiet_start') %}
+          {% set e = states('input_datetime.door_lock_watchdog_quiet_end') %}
+          {% if s in ['unknown', 'unavailable', ''] or e in ['unknown', 'unavailable', ''] %}
+            true
+          {% elif s > e %}
+            {{ not (now_t >= s or now_t < e) }}
+          {% else %}
+            {{ not (now_t >= s and now_t < e) }}
+          {% endif %}
+      # 冷却期判断
+      - condition: template
+        value_template: >-
+          {% set last = state_attr('input_datetime.door_lock_last_notified', 'timestamp') | float(0) %}
+          {% set cd_h = states('input_number.door_lock_watchdog_cooldown_hours') | float(12) %}
+          {% set cd_sec = (cd_h if cd_h > 0 else 12) * 3600 %}
+          {{ (now().timestamp() - last) >= cd_sec }}
+    action:
+      - variables:
+          epoch: "{{ state_attr('sensor.door_lock_latest_recording', 'epoch') | float(0) }}"
+          hours_ago: "{{ ((now().timestamp() - (epoch | float(0))) / 3600) | round(1) }}"
+          last_file: "{{ state_attr('sensor.door_lock_latest_recording', 'file') | default('未知') }}"
+          msg: "已 {{ hours_ago }} 小时未检测到新录像（最新文件：{{ last_file }}），请检查门锁自动化或设备连接。"
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.door_lock_alert_baseline_epoch
+        data:
+          value: "{{ epoch | int(0) }}"
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.door_lock_watchdog_alerting
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.door_lock_last_notified
+        data:
+          timestamp: "{{ now().timestamp() | int }}"
+      - service: script.door_lock_send_notification
+        data:
+          notification_id: door_lock_watchdog_stale
+          title: "⚠️ 门锁录像疑似漏录"
+          body: "{{ msg }}"
+
+  # 5.2 录像目录挂载/读取异常告警
+  - id: door_lock_watchdog_mount_alert
+    alias: 门锁监控 - 目录挂载异常告警
+    mode: single
+    trigger:
+      - platform: time_pattern
+        minutes: "/30"
+      - platform: state
+        entity_id: binary_sensor.door_lock_recording_mount_error
+        to: "on"
+    condition:
+      - condition: state
+        entity_id: input_boolean.door_lock_watchdog_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.door_lock_alert_mount_enabled
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.door_lock_recording_mount_error
+        state: "on"
+      - condition: template
+        value_template: >-
+          {% set last = state_attr('input_datetime.door_lock_last_notified', 'timestamp') | float(0) %}
+          {% set cd_h = states('input_number.door_lock_watchdog_cooldown_hours') | float(12) %}
+          {% set cd_sec = (cd_h if cd_h > 0 else 12) * 3600 %}
+          {{ (now().timestamp() - last) >= cd_sec }}
+    action:
+      - service: input_number.set_value
+        target:
+          entity_id: input_number.door_lock_alert_baseline_epoch
+        data:
+          value: "{{ state_attr('sensor.door_lock_latest_recording', 'epoch') | int(0) }}"
+      - service: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.door_lock_watchdog_alerting
+      - service: input_datetime.set_datetime
+        target:
+          entity_id: input_datetime.door_lock_last_notified
+        data:
+          timestamp: "{{ now().timestamp() | int }}"
+      - service: script.door_lock_send_notification
+        data:
+          notification_id: door_lock_watchdog_stale
+          title: "🚨 门锁录像目录异常"
+          body: "HA 无法访问门锁录像目录，请检查 NAS 挂载或路径配置。"
+
+  # 5.3 恢复通知闭环（仅当真实检测到更新的 MP4 录像时解除告警）
+  - id: door_lock_watchdog_recovered
+    alias: 门锁监控 - 录像恢复通知
+    mode: single
+    trigger:
+      - platform: state
+        entity_id: sensor.door_lock_latest_recording
+        attribute: epoch
+      - platform: state
+        entity_id: binary_sensor.door_lock_recording_stale
+        from: "on"
+        to: "off"
+      - platform: state
+        entity_id: binary_sensor.door_lock_recording_mount_error
+        from: "on"
+        to: "off"
+    condition:
+      - condition: state
+        entity_id: input_boolean.door_lock_watchdog_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.door_lock_watchdog_alerting
+        state: "on"
+      - condition: state
+        entity_id: binary_sensor.door_lock_recording_stale
+        state: "off"
+      - condition: state
+        entity_id: binary_sensor.door_lock_recording_mount_error
+        state: "off"
+      - condition: template
+        value_template: >-
+          {% set status = state_attr('sensor.door_lock_latest_recording', 'status') | default('unknown') %}
+          {% set epoch = state_attr('sensor.door_lock_latest_recording', 'epoch') | float(0) %}
+          {% set base = states('input_number.door_lock_alert_baseline_epoch') | float(0) %}
+          {{ status == 'ok' and epoch > base }}
+    action:
+      - service: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.door_lock_watchdog_alerting
+      - service: persistent_notification.dismiss
+        data:
+          notification_id: door_lock_watchdog_stale
+      - if:
+          - condition: state
+            entity_id: input_boolean.door_lock_alert_recovery_enabled
+            state: "on"
+        then:
+          - variables:
+              last_file: "{{ state_attr('sensor.door_lock_latest_recording', 'file') | default('') }}"
+          - service: script.door_lock_send_notification
+            data:
+              notification_id: door_lock_watchdog_recovered
+              title: "✅ 门锁录像已恢复正常"
+              body: "已检测到新门锁录像（{{ last_file }}），监控恢复正常。"
+              bark_level: "active"
+
+  # 5.4 实时自动化 / 脚本报错捕获（秒级推送并联动前端横幅）
+  - id: door_lock_watchdog_log_error
+    alias: 门锁监控 - 自动化报错实时推送
+    mode: queued
+    max: 5
+    trigger:
+      - platform: event
+        event_type: system_log_event
+        event_data:
+          level: ERROR
+    condition:
+      - condition: state
+        entity_id: input_boolean.door_lock_watchdog_enabled
+        state: "on"
+      - condition: state
+        entity_id: input_boolean.door_lock_alert_error_enabled
+        state: "on"
+      - condition: template
+        value_template: >-
+          {% set text = (trigger.event.data.message | join(' ') ~ ' ' ~ trigger.event.data.name) | lower %}
+          {% set raw_kw = states('input_text.door_lock_error_keywords') %}
+          {% if raw_kw in ['', 'unknown', 'unavailable'] %}
+            {% set raw_kw = 'door_lock,video_doorbell,save_video,gallery_card,门锁' %}
+          {% endif %}
+          {% set ns = namespace(matched=false) %}
+          {% for kw in raw_kw.split(',') %}
+            {% set k = kw | trim | lower %}
+            {% if k and k in text %}
+              {% set ns.matched = true %}
+            {% endif %}
+          {% endfor %}
+          {{ ns.matched }}
+    action:
+      - variables:
+          summary: "{{ (trigger.event.data.message | join(' '))[:200] }}"
+      - service: input_text.set_value
+        target:
+          entity_id: input_text.door_lock_last_error
+        data:
+          value: "{{ now().strftime('%m-%d %H:%M') }} {{ summary[:230] }}"
+      - service: script.door_lock_send_notification
+        data:
+          notification_id: door_lock_watchdog_error
+          title: "🚨 门锁录像自动化报错"
+          body: "{{ summary }}"

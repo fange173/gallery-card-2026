@@ -1,0 +1,157 @@
+# ==============================================================================
+# Gallery Card 2026 - 门锁录像监控与多渠道告警配置页面（Lovelace 视图）
+# 使用方法：
+# 1. 在 Home Assistant 中打开任意仪表板（或新建仪表板）-> 右上角「编辑仪表板」
+# 2. 点击「+ 添加视图」->「在 YAML 中编辑」（或直接打开「原始配置编辑器」添加到 views: 下）
+# 3. 粘贴本文件全部内容并保存即可使用（全原生卡片，无需额外 HACS 前端组件）
+# 4. 首次使用建议先点击最上方「填充推荐默认参数」按钮，再填写各渠道密钥并点击测试
+# ==============================================================================
+
+title: 门锁录像监控配置
+path: door-lock-watchdog
+icon: mdi:cctv
+cards:
+  # ----------------------------------------------------------------------------
+  # 1. 运行状态总览与快捷操作
+  # ----------------------------------------------------------------------------
+  - type: entities
+    title: 运行状态总览
+    show_header_toggle: false
+    entities:
+      - entity: input_boolean.door_lock_watchdog_enabled
+      - entity: sensor.door_lock_latest_recording
+        name: 最新录像时间
+      - type: attribute
+        entity: sensor.door_lock_latest_recording
+        attribute: status
+        name: 巡检目录状态（ok/empty/dir_missing）
+      - type: attribute
+        entity: sensor.door_lock_latest_recording
+        attribute: file
+        name: 最新录像文件
+      - type: attribute
+        entity: sensor.door_lock_latest_recording
+        attribute: file_count
+        name: 有效 MP4 总数
+      - entity: binary_sensor.door_lock_recording_stale
+        name: 漏录超时状态
+      - entity: binary_sensor.door_lock_recording_mount_error
+        name: 目录挂载状态
+      - entity: input_text.door_lock_last_error
+      - type: button
+        name: 立即巡检录像目录
+        icon: mdi:refresh
+        action_name: 立即巡检
+        tap_action:
+          action: call-service
+          service: script.door_lock_refresh_recording
+      - type: button
+        name: 清除最近报错摘要
+        icon: mdi:broom
+        action_name: 清除报错
+        tap_action:
+          action: call-service
+          service: script.door_lock_clear_last_error
+      - type: button
+        name: 填充推荐默认参数（保留已填密钥）
+        icon: mdi:cog-refresh-outline
+        action_name: 填充默认值
+        tap_action:
+          action: call-service
+          service: script.door_lock_init_defaults
+
+  # ----------------------------------------------------------------------------
+  # 2. 提醒事项开关与阈值参数
+  # ----------------------------------------------------------------------------
+  - type: entities
+    title: 提醒事项与规则配置
+    show_header_toggle: false
+    entities:
+      - entity: input_boolean.door_lock_alert_error_enabled
+      - entity: input_text.door_lock_error_keywords
+      - type: divider
+      - entity: input_boolean.door_lock_alert_stale_enabled
+      - entity: input_number.door_lock_watchdog_timeout_hours
+      - entity: input_number.door_lock_watchdog_cooldown_hours
+      - entity: input_datetime.door_lock_watchdog_quiet_start
+      - entity: input_datetime.door_lock_watchdog_quiet_end
+      - type: divider
+      - entity: input_boolean.door_lock_alert_mount_enabled
+      - entity: input_boolean.door_lock_alert_recovery_enabled
+
+  # ----------------------------------------------------------------------------
+  # 3. 推送渠道勾选与测试总控
+  # ----------------------------------------------------------------------------
+  - type: entities
+    title: 推送渠道选择与全渠道测试
+    show_header_toggle: false
+    entities:
+      - entity: input_boolean.door_lock_channel_ha_persistent_enabled
+      - entity: input_boolean.door_lock_channel_bark_enabled
+      - entity: input_boolean.door_lock_channel_pushplus_enabled
+      - entity: input_boolean.door_lock_channel_webhook_enabled
+      - type: button
+        name: 测试全部已勾选渠道
+        icon: mdi:send-check-outline
+        action_name: 发送测试
+        tap_action:
+          action: call-service
+          service: script.door_lock_test_all_channels
+
+  # ----------------------------------------------------------------------------
+  # 4. 各渠道详细参数与单独测试
+  # ----------------------------------------------------------------------------
+  - type: entities
+    title: Bark 渠道配置
+    show_header_toggle: false
+    entities:
+      - entity: input_boolean.door_lock_channel_bark_enabled
+        name: 启用 Bark
+      - entity: input_text.door_lock_bark_server
+      - entity: input_text.door_lock_bark_key
+      - entity: input_text.door_lock_bark_group
+      - entity: input_select.door_lock_bark_level
+      - entity: input_text.door_lock_bark_sound
+      - type: button
+        name: 测试 Bark 推送
+        icon: mdi:cellphone-message
+        action_name: 测试 Bark
+        tap_action:
+          action: call-service
+          service: script.door_lock_test_bark
+
+  - type: entities
+    title: PushPlus 渠道配置
+    show_header_toggle: false
+    entities:
+      - entity: input_boolean.door_lock_channel_pushplus_enabled
+        name: 启用 PushPlus
+      - entity: input_text.door_lock_pushplus_token
+      - entity: input_select.door_lock_pushplus_channel
+      - entity: input_select.door_lock_pushplus_template
+      - entity: input_text.door_lock_pushplus_topic
+      - type: button
+        name: 测试 PushPlus 推送
+        icon: mdi:wechat
+        action_name: 测试 PushPlus
+        tap_action:
+          action: call-service
+          service: script.door_lock_test_pushplus
+
+  - type: entities
+    title: 自定义 Webhook 渠道配置
+    show_header_toggle: false
+    entities:
+      - entity: input_boolean.door_lock_channel_webhook_enabled
+        name: 启用自定义 Webhook
+      - entity: input_text.door_lock_webhook_url
+      - entity: input_text.door_lock_webhook_title_field
+      - entity: input_text.door_lock_webhook_body_field
+      - entity: input_text.door_lock_webhook_prefix
+      - type: button
+        name: 测试 Webhook 推送
+        icon: mdi:webhook
+        action_name: 测试 Webhook
+        tap_action:
+          action: call-service
+          service: script.door_lock_test_webhook

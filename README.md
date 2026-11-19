@@ -186,6 +186,58 @@ Old strftime-like tokens such as `%Y`, `%m`, `%d`, `%H`, `%M`, `%S` are converte
 | `media_cache_size` | number | `500` | Maximum number of resolved temporary media URLs kept in the LRU cache. |
 | `resolve_concurrency` | number | `4` | Concurrent URL resolutions per visible batch. Values above `8` are capped. |
 
+### In-Page Upload & Delete (`upload`)
+
+Admin-only controls to upload missed recordings directly from the card or delete local `media-source` items with a confirmation dialog:
+
+```yaml
+upload:
+  enabled: true
+  allow_delete: true
+  target_path: media-source://media_source/local
+  folder_format: YYYYMMDD
+  file_name_format: YYYYMMDDHHmmss
+  mkdir_service: shell_command.gallery_card_mkdir
+  accept: "video/*,image/*"
+```
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `upload.enabled` | boolean | `false` | Show upload entry points (visible only to HA admin users). |
+| `upload.allow_delete` | boolean | `true` | Allow admins to delete local `media-source` files with a confirmation dialog. |
+| `upload.target_path` | string | First local media-source path | Root upload directory. Defaults to the first `media-source://media_source/local` path in `entities`. |
+| `upload.folder_format` | string | Inherited `folder_format` | Subfolder date format; leave empty to upload directly to `target_path`. |
+| `upload.file_name_format` | string | `YYYYMMDDHHmmss` | Timestamp format used to rename uploaded files (defaults to card `file_name_format`). |
+| `upload.mkdir_service` | string | - | Service called with `{ folder }` when a target date folder does not exist (e.g. `shell_command.gallery_card_mkdir`). |
+| `upload.accept` | string | `video/*,image/*` | Accepted MIME types for the file picker. |
+
+> **Reverse proxy note**: If large video uploads fail with `HTTP 413` behind Nginx/Caddy, increase `client_max_size` (e.g. `client_max_size 200M;`) in your proxy config.
+
+### Missed-Recording & Error Watchdog (`watchdog`)
+
+Pairs with the HA backend package to monitor recording gaps and automation errors 24/7, surfacing an inline alert banner when attention is needed:
+
+```yaml
+watchdog:
+  enabled: true
+  timeout_hours: 24
+  stale_entity: binary_sensor.door_lock_recording_stale
+  error_entity: input_text.door_lock_last_error
+  toggle_entity: input_boolean.door_lock_watchdog_enabled
+```
+
+| Name | Type | Default | Description |
+|------|------|---------|-------------|
+| `watchdog.enabled` | boolean | `false` | Enable the watchdog status banner. |
+| `watchdog.timeout_hours` | number | `24` | Frontend fallback threshold (hours) based on the latest dated item. |
+| `watchdog.stale_entity` | string | - | Optional backend `binary_sensor` indicating stale recordings. |
+| `watchdog.error_entity` | string | - | Optional `input_text` entity holding the latest automation error summary. |
+| `watchdog.toggle_entity` | string | - | Optional `input_boolean` master switch entity (hides banner when `off`). |
+
+### Home Assistant Backend Package
+
+See [`docs/ha-watchdog-package.yaml`](docs/ha-watchdog-package.yaml) for a ready-to-use HA Package providing 24/7 stale-recording checks (with 12h cooldown, quiet hours, and recovery notifications), real-time `system_log_event` error alerts via Bark & HA `notify.*`, and a path-validated `shell_command.gallery_card_mkdir` service.
+
 ## Notes
 
 - `media-source://` items need `resolve_media` URLs. The card resolves the main preview first, then resolves thumbnails only when they enter the scroll viewport or are selected.

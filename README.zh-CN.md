@@ -186,6 +186,65 @@ entities:
 | `media_cache_size` | number | `500` | LRU 缓存中最多保留的临时媒体 URL 数量。 |
 | `resolve_concurrency` | number | `4` | 每批可见媒体 URL 的并发解析数，超过 `8` 会自动限制。 |
 
+### 页面内补传与删除 (`upload`)
+
+仅管理员账号可见，支持在画廊页面内直接补传漏录视频/图片，或删除本地 `media-source` 条目（含二次确认弹窗）：
+
+```yaml
+upload:
+  enabled: true
+  allow_delete: true
+  target_path: media-source://media_source/local
+  folder_format: YYYYMMDD
+  file_name_format: YYYYMMDDHHmmss
+  mkdir_service: shell_command.gallery_card_mkdir
+  accept: "video/*,image/*"
+```
+
+| 名称 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `upload.enabled` | boolean | `false` | 是否启用页面内补传入口（仅 HA 管理员可见）。 |
+| `upload.allow_delete` | boolean | `true` | 是否允许管理员删除本地 `media-source` 媒体文件（带不可恢复二次确认弹窗）。 |
+| `upload.target_path` | string | 首个本地媒体源路径 | 上传目标根路径，默认取 `entities` 中第一个 `media-source://media_source/local` 路径。 |
+| `upload.folder_format` | string | 继承 `folder_format` | 按日期创建/归档的子目录格式；留空则直接传至 `target_path` 根目录。 |
+| `upload.file_name_format` | string | `YYYYMMDDHHmmss` | 自动重命名的时间格式（默认继承卡片的 `file_name_format`）。 |
+| `upload.mkdir_service` | string | - | 当目标日期子目录不存在时调用的服务（如 `shell_command.gallery_card_mkdir`），接收参数 `folder`。 |
+| `upload.accept` | string | `video/*,image/*` | 文件选择器允许的 MIME 类型。 |
+
+> **反向代理大文件上传提示**：如果通过 Nginx / Caddy 等反向代理访问 Home Assistant 且上传大视频时遇到 `HTTP 413`，请在反向代理中调大 `client_max_size`（例如 `client_max_size 200M;`）。
+
+### 漏录与异常监控 (`watchdog`)
+
+配合后端 HA Package 24/7 检测漏录超时与自动化报错，并在异常时在卡片顶部展示告警横幅：
+
+```yaml
+watchdog:
+  enabled: true
+  timeout_hours: 24
+  stale_entity: binary_sensor.door_lock_recording_stale
+  mount_error_entity: binary_sensor.door_lock_recording_mount_error
+  error_entity: input_text.door_lock_last_error
+  toggle_entity: input_boolean.door_lock_watchdog_enabled
+```
+
+| 名称 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| `watchdog.enabled` | boolean | `false` | 是否启用监控状态横幅。 |
+| `watchdog.timeout_hours` | number | `24` | 前端兜底判断阈值（小时）。即使未配后端传感器，打开卡片也可按最新录像时间提示。 |
+| `watchdog.stale_entity` | string | - | 可选，关联后端漏录超时 `binary_sensor` 实体。 |
+| `watchdog.mount_error_entity` | string | - | 可选，关联后端目录挂载异常 `binary_sensor` 实体。 |
+| `watchdog.error_entity` | string | - | 可选，关联后端自动化报错摘要 `input_text` 实体。 |
+| `watchdog.toggle_entity` | string | - | 可选，关联后端监控总开关 `input_boolean` 实体（关闭时自动隐藏告警）。 |
+
+### 配套 Home Assistant 后端配置（24/7 推送 + 自动建目录）
+
+仓库内提供了开箱即用的 [`docs/ha-watchdog-package.yaml`](docs/ha-watchdog-package.yaml) 与可视化配置页 [`docs/ha-watchdog-dashboard.yaml`](docs/ha-watchdog-dashboard.yaml)：
+
+1. 在 Home Assistant `configuration.yaml` 的 `homeassistant:` 下启用 `packages: !include_dir_named packages`（如已有 `system_log:` 配置，请将 `fire_event: true` 合并到主配置）。
+2. 将 `docs/ha-watchdog-package.yaml` 复制到 `/config/packages/door_lock_watchdog.yaml`，按文件内 `【按需修改】` 注释修改录像根目录路径（如 `/media` 或 `/media/doorbell`）后重启 HA。
+3. 在仪表板导入 `docs/ha-watchdog-dashboard.yaml`，点击「填充默认参数」，即可在界面中自由勾选提醒事项（实时报错、漏录超时、目录挂载异常、恢复通知）及推送渠道（HA 站内通知、Bark、PushPlus、自定义 Webhook）并一键发送测试通知。
+4. 同时提供安全的 `shell_command.gallery_card_mkdir` 目录创建服务。
+
 ## 说明
 
 - `media-source://` 条目需要解析 `resolve_media` URL。卡片会优先解析主预览，之后仅在缩略图进入滚动视口或被选中时继续解析。
